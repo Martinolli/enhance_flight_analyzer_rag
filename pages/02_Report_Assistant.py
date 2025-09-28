@@ -5,6 +5,10 @@ from datetime import timedelta
 import pandas as pd
 import streamlit as st
 
+# Load environment variables from .env file
+from dotenv import load_dotenv
+load_dotenv()
+
 from components.rag.retrieval import retrieve
 
 # Optional: prefer st.secrets["OPENAI_API_KEY"] if available
@@ -14,7 +18,7 @@ except Exception:
     # Fallback if no secrets.toml file exists
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-MODEL_NAME = os.getenv("OPENAI_MODEL", "gpt-4o-mini")  # change as desired
+MODEL_NAME = os.getenv("OPENAI_MODEL", "gpt-4-turbo")  # change as desired
 
 st.set_page_config(page_title="Knowledge & Report Assistant", page_icon="🧭", layout="wide")
 st.title("🧭 Knowledge & Report Assistant")
@@ -125,7 +129,11 @@ with right:
             if include_tables:
                 numeric_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
                 head = df[numeric_cols].describe().T[["mean", "std", "min", "max"]].round(3)
-                stats_block = head.head(12).to_markdown(index=True)
+                try:
+                    stats_block = head.head(12).to_markdown(index=True)
+                except ImportError:
+                    # Fallback if tabulate is not available
+                    stats_block = head.head(12).to_string()
 
             # Retrieve background knowledge
             kb_query = "flight test data analysis methods, interpretation of torque/ITT/NP trends, vibration analysis, and reporting templates"
