@@ -7,8 +7,13 @@ import streamlit as st
 
 from components.rag.retrieval import retrieve
 
-# Optional: prefer st.secrets["OPENAI_API_KEY"]
-OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY", os.getenv("OPENAI_API_KEY"))
+# Optional: prefer st.secrets["OPENAI_API_KEY"] if available
+try:
+    OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY", os.getenv("OPENAI_API_KEY"))
+except Exception:
+    # Fallback if no secrets.toml file exists
+    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
 MODEL_NAME = os.getenv("OPENAI_MODEL", "gpt-4o-mini")  # change as desired
 
 st.set_page_config(page_title="Knowledge & Report Assistant", page_icon="🧭", layout="wide")
