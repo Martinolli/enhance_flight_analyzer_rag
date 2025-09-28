@@ -62,3 +62,5 @@ chromadb
 pypdf
 openai
 sentence-transformers
+tabulate
+python-dotenv
