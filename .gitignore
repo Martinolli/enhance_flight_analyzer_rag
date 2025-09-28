@@ -7,3 +7,4 @@ __pycache__/
 .env/
 deprecated_files/
 .ragdb/
+.venv/
