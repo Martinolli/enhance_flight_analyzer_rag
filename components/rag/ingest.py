@@ -1,5 +1,29 @@
+"""
+# components/rag/ingest.py
+Handles document ingestion and embedding for the RAG system.
+This includes text extraction, chunking, embedding, and storage in ChromaDB.
+
+Uses either OpenAI embeddings (if OPENAI_API_KEY is set) or local sentence-transformers.
+How to use:
+1. Ensure you have the required packages installed:
+   - `chromadb`
+   - `sentence-transformers`
+   - `python-dotenv`
+   - `pypdf` (optional, for PDF support)
+2. Set the `OPENAI_API_KEY` environment variable if you want to use OpenAI embeddings.
+3. Call `ingest_documents(source_dir, db_path, chunk_size)` to ingest documents from `source_dir` into ChromaDB at `db_path`.
+4. Call `embed_texts(texts)` to embed the texts using the appropriate backend.
+
+"""
+
+
+
 import os
 from typing import List, Optional
+
+# Load environment variables from .env file
+from dotenv import load_dotenv
+load_dotenv()
 
 _EMBEDDER = None
 _USE_OPENAI = False
@@ -75,7 +99,8 @@ def embed_texts(texts: List[str], batch_size: int = 100) -> List[List[float]]:
                 # OpenAI path
                 from openai import OpenAI
                 client: OpenAI = _EMBEDDER
-                model = os.getenv("OPENAI_EMBED_MODEL", "text-embedding-3-small")
+                # Force use of text-embedding-3-small to avoid dimension mismatch
+                model = "text-embedding-3-small"  # 1536 dimensions
                 resp = client.embeddings.create(model=model, input=batch)
                 batch_embeddings = [d.embedding for d in resp.data]
             else:
@@ -91,7 +116,7 @@ def embed_texts(texts: List[str], batch_size: int = 100) -> List[List[float]]:
         except Exception as e:
             print(f"Error processing batch {i // batch_size + 1}: {e}")
             # Add zero embeddings for failed batch to maintain alignment
-            embedding_dim = 1536 if _USE_OPENAI else 384  # Common dimensions
+            embedding_dim = 1536 if _USE_OPENAI else 384  # text-embedding-3-small: 1536, sentence-transformers: 384
             all_embeddings.extend([[0.0] * embedding_dim] * len(batch))
     
     return all_embeddings
