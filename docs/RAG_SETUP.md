@@ -4,7 +4,7 @@
 
 Add these to your environment (or requirements.txt):
 
-```
+```bash
 chromadb
 pypdf
 openai
@@ -12,13 +12,14 @@ sentence-transformers
 ```
 
 Optional:
+
 - `tiktoken` (for token-aware chunking, not required here)
 
 ## 2) Prepare your corpus
 
 Place PDFs/TXT in a folder, e.g.:
 
-```
+```bash
 docs/knowledge_base/
   - Flight_Test_Handbook.pdf
   - Engine_Testing_Principles.pdf
