@@ -4,7 +4,7 @@ from typing import List, Dict, Any
 import chromadb
 from chromadb.api.types import Documents, Embeddings, Metadatas
 
-from .embeddings import embed_texts
+from .ingest import embed_texts
 
 COLLECTION_NAME = "flight_test_kb"
 
