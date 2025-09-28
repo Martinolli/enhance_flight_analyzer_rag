@@ -14,6 +14,10 @@
 # (Only sections that changed are annotated with # >>> UPDATED <<< comments for clarity)
 # Full file included for ease of replacement.
 
+# Load environment variables from .env file
+from dotenv import load_dotenv
+load_dotenv()
+
 import streamlit as st
 import pandas as pd
 import numpy as np
