@@ -8,3 +8,5 @@ __pycache__/
 deprecated_files/
 .ragdb/
 .venv/
+/.streamlit/secrets.toml
+.DS_Store
