@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from components.rag.retrieval import retrieve
+from components.rag.bootstrap import ensure_rag_db
 
 # Optional: prefer st.secrets["OPENAI_API_KEY"] if available
 try:
@@ -90,25 +91,32 @@ with left:
         if not query.strip():
             st.warning("Please enter a question.")
         else:
-            hits = retrieve(query=query, k=top_k, db_path=db_path)
-            if not hits:
-                st.info("No results in the KB. Ingest documents first.")
+            if not ensure_rag_db(db_path=db_path):
+                st.error("Knowledge base not available. Configure RAG_DB_ZIP_URL in secrets or ingest docs locally.")
             else:
-                # Compose RAG prompt
-                context = "\n\n".join([f"[Source {i+1}] {h['text']}" for i, h in enumerate(hits)])
-                prompt = f"""Use the following sources to answer the question. Cite as [Source N].
+                try:
+                    hits = retrieve(query=query, k=top_k, db_path=db_path)
+                except Exception as e:
+                    st.error(f"Retrieval failed: {e}. Ensure your deployed embedding backend matches the DB (e.g., OPENAI_API_KEY set if the DB was built with OpenAI).")
+                    hits = []
+                if not hits:
+                    st.info("No results in the KB. Ingest documents first.")
+                else:
+                    # Compose RAG prompt
+                    context = "\n\n".join([f"[Source {i+1}] {h['text']}" for i, h in enumerate(hits)])
+                    prompt = f"""Use the following sources to answer the question. Cite as [Source N].
 Question: {query}
 
 Sources:
 {context}
 
 Answer:"""
-                with st.spinner("Thinking..."):
-                    answer = call_llm(prompt)
-                st.markdown("**Answer:**")
-                st.write(answer)
-                st.markdown("**Citations:**")
-                render_sources(hits)
+                    with st.spinner("Thinking..."):
+                        answer = call_llm(prompt)
+                    st.markdown("**Answer:**")
+                    st.write(answer)
+                    st.markdown("**Citations:**")
+                    render_sources(hits)
 
 with right:
     st.subheader("Generate Flight Test Report from Current Dataset")
@@ -137,7 +145,15 @@ with right:
 
             # Retrieve background knowledge
             kb_query = "flight test data analysis methods, interpretation of torque/ITT/NP trends, vibration analysis, and reporting templates"
-            hits = retrieve(kb_query, k=rag_k, db_path=db_path2)
+            if not ensure_rag_db(db_path=db_path2):
+                st.error("Knowledge base not available. Configure RAG_DB_ZIP_URL in secrets or ingest docs locally.")
+                hits = []
+            else:
+                try:
+                    hits = retrieve(kb_query, k=rag_k, db_path=db_path2)
+                except Exception as e:
+                    st.error(f"Retrieval failed: {e}. Ensure your deployed embedding backend matches the DB (e.g., OPENAI_API_KEY set if the DB was built with OpenAI).")
+                    hits = []
             context = "\n\n".join([f"[KB {i+1}] {h['text']}" for i, h in enumerate(hits)])
 
             # Construct report prompt
@@ -175,4 +191,15 @@ Be concise, technical, and specific to the dataset.
             render_sources(hits)
 
 st.divider()
-st.caption("Tip: Build the knowledge base by running the ingestion script on your PDFs/TXT and setting OPENAI_API_KEY (or install sentence-transformers for local embeddings).")
+st.caption("Tip: Provide a prebuilt KB via secrets RAG_DB_ZIP_URL, or build locally by running the ingestion script on your PDFs/TXT and setting OPENAI_API_KEY (or install sentence-transformers for local embeddings).")
+
+# Optional one-click initializer in hosted environments
+with st.expander("Initialize knowledge base (if missing)"):
+    default_db = ".ragdb"
+    init_db_path = st.text_input("DB path", value=default_db, key="init_db_path")
+    if st.button("Ensure KB now"):
+        ok = ensure_rag_db(db_path=init_db_path)
+        if ok:
+            st.success(f"Knowledge base is ready at {init_db_path}.")
+        else:
+            st.warning("KB not ready. Set RAG_DB_ZIP_URL in secrets or include docs/knowledge_base and try again.")
