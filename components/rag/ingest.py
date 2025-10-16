@@ -99,8 +99,8 @@ def embed_texts(texts: List[str], batch_size: int = 100) -> List[List[float]]:
                 # OpenAI path
                 from openai import OpenAI
                 client: OpenAI = _EMBEDDER
-                # Force use of text-embedding-3-small to avoid dimension mismatch
-                model = "text-embedding-3-small"  # 1536 dimensions
+                # Use text-embedding-3-large for higher quality embeddings
+                model = os.getenv("OPENAI_EMBED_MODEL", "text-embedding-3-large")  # 3072 dimensions by default
                 resp = client.embeddings.create(model=model, input=batch)
                 batch_embeddings = [d.embedding for d in resp.data]
             else:
@@ -116,7 +116,7 @@ def embed_texts(texts: List[str], batch_size: int = 100) -> List[List[float]]:
         except Exception as e:
             print(f"Error processing batch {i // batch_size + 1}: {e}")
             # Add zero embeddings for failed batch to maintain alignment
-            embedding_dim = 1536 if _USE_OPENAI else 384  # text-embedding-3-small: 1536, sentence-transformers: 384
+            embedding_dim = 3072 if _USE_OPENAI else 384  # text-embedding-3-large: 3072, sentence-transformers: 384
             all_embeddings.extend([[0.0] * embedding_dim] * len(batch))
     
     return all_embeddings

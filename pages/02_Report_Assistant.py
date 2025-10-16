@@ -15,6 +15,27 @@ load_dotenv()
 from components.rag.retrieval import retrieve
 from components.rag.bootstrap import ensure_rag_db
 from components.llm.assistant import ToolEnabledLLM  # NEW
+from components.data_ingest import DataIngestor
+
+st.subheader("📁 Upload Flight Data")
+uploaded_file = st.file_uploader("Upload CSV or Excel", type=["csv", "xlsx", "parquet"])
+
+if uploaded_file:
+    # Save temporarily
+    temp_path = f"/tmp/{uploaded_file.name}"
+    with open(temp_path, "wb") as f:
+        f.write(uploaded_file.getbuffer())
+    
+    # Ingest
+    ingestor = DataIngestor()
+    with st.spinner("Processing and embedding..."):
+        result = ingestor.ingest_file(temp_path, uploaded_file.name)
+    
+    if result["status"] == "success":
+        st.success(f"✅ Ingested {result['row_count']} rows")
+    else:
+        st.error(f"❌ {result['message']}")
+
 
 # Optional: prefer st.secrets["OPENAI_API_KEY"] if available
 try:
