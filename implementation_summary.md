@@ -40,20 +40,22 @@ delete_file()          # Remove file embeddings
 
 **Row Text:**
 
-```
+```bash
 "Description: 226:09:40:00.000, AHRS_L325_ROLL_ANGLE: 0.07, 
  AHRS_L324_PITCH_ANGLE: 0.45, AHRS_L327_BODY_ROLL_RATE: 1.61, ..."
 ```
 
 **Column Text:**
-```
+
+```bash
 "Column name: AHRS_L325_ROLL_ANGLE, Data type: float64, 
  Range: -0.14 to 0.82, Mean: 0.23, Standard deviation: 0.20, 
  Median: 0.21, Sample values: [0.065917969, 0.505371094, ...]"
 ```
 
 **Summary Text:**
-```
+
+```bash
 "Data file: sample_data.csv.xlsx. Contains 54 rows and 45 columns. 
  Numeric columns (44): AHRS_L325_ROLL_ANGLE, AHRS_L324_PITCH_ANGLE, 
  AHRS_L327_BODY_ROLL_RATE, ... Data completeness: 100.0%. 
@@ -65,6 +67,7 @@ delete_file()          # Remove file embeddings
 **Class: `HybridRetriever`**
 
 **Key Features:**
+
 - ✅ Unified retrieval from knowledge base and uploaded data
 - ✅ Multiple collection querying (KB, rows, columns, summaries)
 - ✅ Reciprocal Rank Fusion (RRF) for result merging
@@ -73,6 +76,7 @@ delete_file()          # Remove file embeddings
 - ✅ Configurable source weights
 
 **Key Methods:**
+
 ```python
 retrieve_from_kb()      # Query knowledge base documents
 retrieve_from_data()    # Query uploaded data embeddings
@@ -84,15 +88,18 @@ rerank_results()        # Re-rank with different strategies
 **Retrieval Strategies:**
 
 **Knowledge Base Retrieval:**
+
 - Queries the `flight_test_kb` collection
 - Returns documents with citations
 
 **Data Retrieval:**
+
 - Queries row, column, and summary embeddings
 - Supports file ID filtering
 - Returns data chunks with metadata
 
 **Hybrid Retrieval:**
+
 - Combines KB and data results
 - Uses Reciprocal Rank Fusion (RRF)
 - Configurable source weights
@@ -103,11 +110,13 @@ rerank_results()        # Re-rank with different strategies
 **Updated:** `components/rag/ingest.py`
 
 **Changes:**
+
 - ✅ Upgraded from `text-embedding-3-small` (1536 dims) to `text-embedding-3-large` (3072 dims)
 - ✅ Configurable via environment variable `OPENAI_EMBED_MODEL`
 - ✅ Higher quality embeddings for better semantic search
 
 **Configuration:**
+
 ```bash
 OPENAI_EMBED_MODEL=text-embedding-3-large
 ```
@@ -117,6 +126,7 @@ OPENAI_EMBED_MODEL=text-embedding-3-large
 **Created:** `tests/test_data_ingest.py`
 
 **Test Coverage:**
+
 - ✅ DataIngestor initialization
 - ✅ CSV and Excel file reading
 - ✅ Row text generation
@@ -131,7 +141,8 @@ OPENAI_EMBED_MODEL=text-embedding-3-large
 **Demo Script:** `test_ingestion_demo.py`
 
 **Test Results with Sample Data:**
-```
+
+```bash
 ✓ Excel file read successfully (54 rows, 45 columns)
 ✓ CSV file read successfully (33 rows, 11 columns)
 ✓ Row text generated (1585 chars)
@@ -147,6 +158,7 @@ OPENAI_EMBED_MODEL=text-embedding-3-large
 **Created:** `.env.template`
 
 **Configuration Options:**
+
 ```bash
 OPENAI_API_KEY=your-openai-api-key-here
 OPENAI_EMBED_MODEL=text-embedding-3-large
@@ -160,8 +172,10 @@ OPENAI_MODEL=gpt-4-turbo
 ### Collections
 
 **1. `uploaded_data_rows`**
+
 - **Purpose**: Row-level embeddings for finding similar records
 - **Metadata**:
+
   ```json
   {
     "file_id": "file_abc123",
@@ -177,8 +191,10 @@ OPENAI_MODEL=gpt-4-turbo
   ```
 
 **2. `uploaded_data_columns`**
+
 - **Purpose**: Column metadata embeddings for schema understanding
 - **Metadata**:
+
   ```json
   {
     "file_id": "file_abc123",
@@ -192,8 +208,10 @@ OPENAI_MODEL=gpt-4-turbo
   ```
 
 **3. `uploaded_data_summaries`**
+
 - **Purpose**: Dataset-level summaries for high-level queries
 - **Metadata**:
+
   ```json
   {
     "file_id": "file_abc123",
@@ -299,12 +317,14 @@ filtered = retriever.filter_by_metadata(
 ### Sample Data Analysis
 
 **File:** `sample_data.csv.xlsx`
+
 - **Rows:** 54
 - **Columns:** 45
 - **Numeric Columns:** 44
 - **Categorical Columns:** 1 (Description - timestamps)
 
 **Key Parameters:**
+
 - AHRS (Attitude & Heading Reference System) data
 - Engine parameters (Torque, ITT, NG, NP)
 - Accelerometer data (multiple axes)
@@ -312,6 +332,7 @@ filtered = retriever.filter_by_metadata(
 - Oil temperature
 
 **Data Characteristics:**
+
 - 100% complete (no missing values)
 - Time-series format with timestamps
 - Mix of attitude, engine, and vibration data
@@ -320,12 +341,14 @@ filtered = retriever.filter_by_metadata(
 ### Test Results
 
 **Ingestion Performance:**
+
 - ✅ File reading: < 1 second
 - ✅ Text generation: < 1 second
 - ✅ Embedding generation: Depends on API (typically 1-3 seconds for summary)
 - ✅ Database storage: < 1 second
 
 **Text Quality:**
+
 - ✅ Row text captures all parameters with values
 - ✅ Column text includes statistics and sample values
 - ✅ Summary text provides comprehensive dataset overview
@@ -337,6 +360,7 @@ filtered = retriever.filter_by_metadata(
 ### Step 2: Enhanced LLM Tools (In Progress)
 
 **Planned Tools:**
+
 1. ✅ `read_uploaded_file` - Read and preview uploaded data
 2. ✅ `query_data_embeddings` - Search data using embeddings
 3. ⏳ `generate_pivot_table` - Create pivot tables
@@ -345,6 +369,7 @@ filtered = retriever.filter_by_metadata(
 6. ⏳ `filter_data` - Apply complex filters
 
 **Implementation Priority:**
+
 1. Integrate hybrid retrieval into LLM assistant
 2. Add data querying tools
 3. Implement table generation tools
@@ -353,6 +378,7 @@ filtered = retriever.filter_by_metadata(
 ### Step 3: Query Understanding (Planned)
 
 **Components:**
+
 - Intent classification (KB search, data analysis, hybrid)
 - Entity extraction (columns, metrics, filters)
 - Execution planning
@@ -360,6 +386,7 @@ filtered = retriever.filter_by_metadata(
 ### Step 4: UI Integration (Planned)
 
 **Components:**
+
 - File upload interface
 - Query interface with source selection
 - Result display with citations
@@ -372,11 +399,13 @@ filtered = retriever.filter_by_metadata(
 ### Environment Setup
 
 **Required:**
+
 ```bash
 OPENAI_API_KEY=sk-...  # Your OpenAI API key
 ```
 
 **Optional:**
+
 ```bash
 OPENAI_EMBED_MODEL=text-embedding-3-large  # Default
 OPENAI_MODEL=gpt-4-turbo  # For chat completion
