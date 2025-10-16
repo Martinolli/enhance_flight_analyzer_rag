@@ -264,6 +264,21 @@ class ToolEnabledLLM:
                 if isinstance(items, list):
                     self.suggestions.extend(items)
                 return _safe_json_dumps({"ok": True, "count": len(items)})
+            
+            if name == "query_uploaded_data":
+                try:
+                    # Lazy import to avoid hard dependency at import time
+                    from components.rag.hybrid_retrieval import HybridRetriever
+                    retriever = HybridRetriever()
+                    results = retriever.retrieve_hybrid(
+                        query=arguments.get("query", ""),
+                        k=int(arguments.get("k", 5)),
+                        sources=["data"],
+                        weights={"kb": 0.0, "data": 1.0},
+                    )
+                    return _safe_json_dumps({"results": results})
+                except Exception as e:
+                    return _safe_json_dumps({"error": f"query_uploaded_data failed: {e}"})
 
             return _safe_json_dumps({"error": f"Unknown tool: {name}"})
         except Exception as e:

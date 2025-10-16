@@ -3,9 +3,13 @@
 import os
 import textwrap
 from datetime import timedelta
+import tempfile
 
 import pandas as pd
 import streamlit as st
+
+# Set page config early
+st.set_page_config(page_title="Knowledge & Report Assistant", page_icon="🧭", layout="wide")
 
 # Load environment variables from .env file
 from dotenv import load_dotenv
@@ -21,15 +25,22 @@ st.subheader("📁 Upload Flight Data")
 uploaded_file = st.file_uploader("Upload CSV or Excel", type=["csv", "xlsx", "parquet"])
 
 if uploaded_file:
-    # Save temporarily
-    temp_path = f"/tmp/{uploaded_file.name}"
-    with open(temp_path, "wb") as f:
-        f.write(uploaded_file.getbuffer())
+    # Save to a cross-platform temp file (Windows safe)
+    suffix = os.path.splitext(uploaded_file.name)[1]
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        tmp.write(uploaded_file.getbuffer())
+        temp_path = tmp.name
     
     # Ingest
     ingestor = DataIngestor()
     with st.spinner("Processing and embedding..."):
         result = ingestor.ingest_file(temp_path, uploaded_file.name)
+    
+    # Clean up temp file
+    try:
+        os.remove(temp_path)
+    except Exception:
+        pass
     
     if result["status"] == "success":
         st.success(f"✅ Ingested {result['row_count']} rows")

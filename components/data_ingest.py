@@ -390,7 +390,7 @@ class DataIngestor:
             # Compute overall statistics
             numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
             categorical_cols = df.select_dtypes(include=["object", "category"]).columns.tolist()
-            datetime_cols = df.select_dtypes(include=["datetime64"]).columns.tolist()
+            datetime_cols = df.select_dtypes(include=["datetime64[ns]", "datetime64[ns, tz]"]).columns.tolist()
             
             metadata = {
                 "file_id": file_id,
@@ -447,6 +447,10 @@ class DataIngestor:
         try:
             # Get all summaries (one per file)
             results = self.summaries_collection.get()
+            metadatas = results.get("metadatas") or []
+            # Flatten if Chroma returns nested lists
+            if metadatas and isinstance(metadatas[0], list):
+                metadatas = [m for sub in metadatas for m in sub]
             
             files = []
             if results and results.get("metadatas"):
