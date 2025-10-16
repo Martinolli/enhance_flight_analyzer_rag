@@ -4,7 +4,7 @@ Demo script to test data ingestion with sample flight data.
 
 import sys
 import os
-sys.path.insert(0, '/home/ubuntu/enhance_flight_analyzer_rag')
+sys.path.insert(0, 'enhance_flight_analyzer_rag')
 
 import pandas as pd
 from components.data_ingest import DataIngestor
@@ -23,7 +23,7 @@ def main():
     print("\n2. Testing file reading...")
     
     # Test Excel file
-    excel_path = "/home/ubuntu/upload/sample_data.csv.xlsx"
+    excel_path = "sample_data.csv.xlsx"
     df_excel = ingestor.read_file(excel_path)
     
     if df_excel is not None:
@@ -47,7 +47,7 @@ def main():
         return
     
     # Test CSV file
-    csv_path = "/home/ubuntu/upload/Piece_Data_Sample.csv"
+    csv_path = "Piece_Data_Sample.csv"
     df_csv = ingestor.read_file(csv_path)
     
     if df_csv is not None:
