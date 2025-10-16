@@ -9,7 +9,6 @@ from collections import defaultdict
 from typing import Any, Dict, List, Optional, Tuple
 
 import chromadb
-from chromadb.api.types import Documents, Embeddings, Metadatas
 
 from .ingest import embed_texts
 from .retrieval import get_collection as get_kb_collection
@@ -63,6 +62,20 @@ class HybridRetriever:
             self.data_summaries_collection = self.client.get_collection(self.DATA_SUMMARIES_COLLECTION)
         except Exception:
             self.data_summaries_collection = None
+
+    @staticmethod
+    def _infer_collection_dimension(collection) -> Optional[int]:
+        """Inspect a collection to determine stored embedding dimension."""
+        if collection is None:
+            return None
+        try:
+            sample = collection.get(limit=1, include=["embeddings"])
+            embeddings = sample.get("embeddings") or []
+            if embeddings and embeddings[0]:
+                return len(embeddings[0])
+        except Exception as exc:
+            print(f"Warning: unable to inspect collection embedding dimension: {exc}")
+        return None
     
     def retrieve_from_kb(
         self,
@@ -84,7 +97,8 @@ class HybridRetriever:
         
         try:
             # Generate query embedding
-            q_emb = embed_texts([query])[0]
+            target_dim = self._infer_collection_dimension(self.kb_collection)
+            q_emb = embed_texts([query], target_dim=target_dim)[0]
             
             # Query the collection
             results = self.kb_collection.query(
@@ -134,14 +148,20 @@ class HybridRetriever:
             List of result dicts with keys: text, metadata, score, source_type
         """
         results = []
-        
-        # Generate query embedding
-        try:
-            q_emb = embed_texts([query])[0]
-        except Exception as e:
-            print(f"Error generating query embedding: {e}")
-            return []
-        
+        embedding_cache: Dict[Optional[int], Optional[List[float]]] = {}
+
+        def get_query_embedding(target_dim: Optional[int]) -> Optional[List[float]]:
+            """Cache query embeddings per dimension to avoid duplicate API calls."""
+            cache_key = target_dim if target_dim is not None else -1
+            if cache_key in embedding_cache:
+                return embedding_cache[cache_key]
+            try:
+                embedding_cache[cache_key] = embed_texts([query], target_dim=target_dim)[0]
+            except Exception as exc:
+                print(f"Error generating query embedding for dimension {target_dim}: {exc}")
+                embedding_cache[cache_key] = None
+            return embedding_cache[cache_key]
+
         # Determine which collections to query
         collections = []
         if embedding_type in ["row", "all"] and self.data_rows_collection:
@@ -154,6 +174,11 @@ class HybridRetriever:
         # Query each collection
         for emb_type, collection in collections:
             try:
+                target_dim = self._infer_collection_dimension(collection)
+                q_emb = get_query_embedding(target_dim)
+                if q_emb is None:
+                    continue
+
                 # Build where clause for filtering
                 where = None
                 if file_id:
@@ -412,4 +437,3 @@ def retrieve_hybrid_simple(
     """
     retriever = HybridRetriever(db_path=db_path)
     return retriever.retrieve_hybrid(query, k=k, sources=sources)
-

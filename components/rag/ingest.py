@@ -19,7 +19,7 @@ How to use:
 
 
 import os
-from typing import List, Optional
+from typing import List, Optional, Dict
 
 # Load environment variables from .env file
 from dotenv import load_dotenv
@@ -27,6 +27,14 @@ load_dotenv()
 
 _EMBEDDER = None
 _USE_OPENAI = False
+_OPENAI_MODEL_CACHE: Dict[int, str] = {}
+
+_MODEL_DIMENSIONS = {
+    "text-embedding-3-large": 3072,
+    "text-embedding-3-small": 1536,
+    "text-embedding-3-small-similarity": 1536,
+    "text-embedding-ada-002": 1536,
+}
 
 def _try_openai():
     try:
@@ -74,7 +82,46 @@ def _init_embedder():
         _USE_OPENAI = False
         _EMBEDDER = _get_local_model()
 
-def embed_texts(texts: List[str], batch_size: int = 100) -> List[List[float]]:
+def _resolve_openai_model(target_dim: Optional[int]) -> str:
+    """Pick an OpenAI embedding model that matches the requested dimension if possible."""
+    configured_model = os.getenv("OPENAI_EMBED_MODEL", "text-embedding-3-large")
+
+    if target_dim is None:
+        return configured_model
+
+    configured_dim = _MODEL_DIMENSIONS.get(configured_model)
+    if configured_dim == target_dim:
+        return configured_model
+
+    # Already resolved for this dimension in this process
+    cached = _OPENAI_MODEL_CACHE.get(target_dim)
+    if cached:
+        return cached
+
+    # Try to find a known model with the desired dimension
+    for model_name, model_dim in _MODEL_DIMENSIONS.items():
+        if model_dim == target_dim:
+            print(
+                f"Detected existing embeddings with dimension {target_dim}. "
+                f"Using OpenAI model '{model_name}' for compatibility instead of '{configured_model}'."
+            )
+            _OPENAI_MODEL_CACHE[target_dim] = model_name
+            return model_name
+
+    # Fallback to configured model; warn if we cannot match dimensions
+    print(
+        f"Warning: No known OpenAI embedding model matches dimension {target_dim}. "
+        f"Using configured model '{configured_model}'."
+    )
+    _OPENAI_MODEL_CACHE[target_dim] = configured_model
+    return configured_model
+
+
+def embed_texts(
+    texts: List[str],
+    batch_size: int = 100,
+    target_dim: Optional[int] = None,
+) -> List[List[float]]:
     """
     Returns a list of embedding vectors for the input texts.
     Prefers OpenAI; falls back to sentence-transformers locally.
@@ -99,8 +146,7 @@ def embed_texts(texts: List[str], batch_size: int = 100) -> List[List[float]]:
                 # OpenAI path
                 from openai import OpenAI
                 client: OpenAI = _EMBEDDER
-                # Use text-embedding-3-large for higher quality embeddings
-                model = os.getenv("OPENAI_EMBED_MODEL", "text-embedding-3-large")  # 3072 dimensions by default
+                model = _resolve_openai_model(target_dim)
                 resp = client.embeddings.create(model=model, input=batch)
                 batch_embeddings = [d.embedding for d in resp.data]
             else:
@@ -111,14 +157,30 @@ def embed_texts(texts: List[str], batch_size: int = 100) -> List[List[float]]:
                     show_progress_bar=len(texts) > 10  # Show progress for large batches
                 ).tolist()
             
+            if target_dim is not None and batch_embeddings:
+                sample_dim = len(batch_embeddings[0])
+                if sample_dim != target_dim:
+                    raise ValueError(
+                        f"Generated embeddings have dimension {sample_dim}, "
+                        f"but collection expects {target_dim}. "
+                        "Update OPENAI_EMBED_MODEL or rebuild the vector store."
+                    )
+
             all_embeddings.extend(batch_embeddings)
             
         except Exception as e:
             print(f"Error processing batch {i // batch_size + 1}: {e}")
             # Add zero embeddings for failed batch to maintain alignment
-            embedding_dim = 3072 if _USE_OPENAI else 384  # text-embedding-3-large: 3072, sentence-transformers: 384
+            if target_dim is not None:
+                embedding_dim = target_dim
+            else:
+                embedding_dim = (
+                    _MODEL_DIMENSIONS.get(os.getenv("OPENAI_EMBED_MODEL", ""), 3072)
+                    if _USE_OPENAI
+                    else 384  # sentence-transformers default dim
+                )
             all_embeddings.extend([[0.0] * embedding_dim] * len(batch))
-    
+
     return all_embeddings
 
 
@@ -190,9 +252,17 @@ def ingest_documents(source_dir: str, db_path: str = ".ragdb", chunk_size: int =
         return
     
     print(f"Embedding {len(documents)} chunks...")
+    target_dim: Optional[int] = None
+    try:
+        sample = collection.get(limit=1, include=["embeddings"])
+        existing_embeddings = sample.get("embeddings") or []
+        if existing_embeddings and existing_embeddings[0]:
+            target_dim = len(existing_embeddings[0])
+    except Exception as exc:
+        print(f"Warning: unable to inspect existing embedding dimension: {exc}")
     
     # Generate embeddings
-    embeddings = embed_texts(documents)
+    embeddings = embed_texts(documents, target_dim=target_dim)
     
     # Add to collection
     collection.add(

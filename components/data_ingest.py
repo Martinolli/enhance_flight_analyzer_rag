@@ -65,6 +65,20 @@ class DataIngestor:
             name=self.COLLECTION_SUMMARIES,
             metadata={"description": "Dataset summary embeddings"}
         )
+
+    @staticmethod
+    def _infer_collection_dimension(collection) -> Optional[int]:
+        """Inspect a collection to determine the stored embedding dimension."""
+        if collection is None:
+            return None
+        try:
+            sample = collection.get(limit=1, include=["embeddings"])
+            embeddings = sample.get("embeddings") or []
+            if embeddings and embeddings[0]:
+                return len(embeddings[0])
+        except Exception as exc:
+            print(f"Warning: unable to inspect collection embedding dimension: {exc}")
+        return None
     
     def ingest_file(
         self,
@@ -230,6 +244,7 @@ class DataIngestor:
             Number of rows embedded
         """
         try:
+            target_dim = self._infer_collection_dimension(self.rows_collection)
             # Sample if necessary
             if len(df) > max_rows:
                 if sample_strategy == "uniform":
@@ -277,7 +292,7 @@ class DataIngestor:
                 batch_ids = row_ids[i:i+batch_size]
                 
                 # Generate embeddings
-                embeddings = embed_texts(batch_texts)
+                embeddings = embed_texts(batch_texts, target_dim=target_dim)
                 
                 # Store in ChromaDB
                 self.rows_collection.add(
@@ -311,6 +326,7 @@ class DataIngestor:
             Number of columns embedded
         """
         try:
+            target_dim = self._infer_collection_dimension(self.columns_collection)
             column_texts = []
             column_metadatas = []
             column_ids = []
@@ -351,7 +367,7 @@ class DataIngestor:
                 column_ids.append(column_id)
             
             # Generate embeddings
-            embeddings = embed_texts(column_texts)
+            embeddings = embed_texts(column_texts, target_dim=target_dim)
             
             # Store in ChromaDB
             self.columns_collection.add(
@@ -385,6 +401,7 @@ class DataIngestor:
             True if successful, False otherwise
         """
         try:
+            target_dim = self._infer_collection_dimension(self.summaries_collection)
             text = self._create_summary_text(df, file_name)
             
             # Compute overall statistics
@@ -409,7 +426,7 @@ class DataIngestor:
             }
             
             # Generate embedding
-            embeddings = embed_texts([text])
+            embeddings = embed_texts([text], target_dim=target_dim)
             
             # Store in ChromaDB
             self.summaries_collection.add(
@@ -624,4 +641,3 @@ class DataIngestor:
         parts.append(f"Memory usage: {memory_mb:.1f} MB")
         
         return ". ".join(parts) + "."
-
