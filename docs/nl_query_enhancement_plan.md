@@ -1319,6 +1319,7 @@ def embed_rows_batch(rows: List[str], batch_size: int = 100):
 4. **Begin Step 1** (Data Ingestion Module)
 
 ### Questions for Clarification
+
 1. **Embedding model**: Stick with `text-embedding-3-small` or upgrade?
 2. **File size limits**: What's the maximum file size to support?
 3. **Retention policy**: How long to keep uploaded data embeddings?
@@ -1332,6 +1333,7 @@ def embed_rows_batch(rows: List[str], batch_size: int = 100):
 ### Example Queries
 
 **Query 1: Simple data analysis**
+
 ```
 "What was the average engine torque during the flight?"
 ```
