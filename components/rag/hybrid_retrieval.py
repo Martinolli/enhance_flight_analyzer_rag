@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import chromadb
 
-from .ingest import embed_texts
+from .ingest import get_query_embedding_cached
 from .retrieval import get_collection as get_kb_collection
 
 
@@ -96,9 +96,9 @@ class HybridRetriever:
             return []
         
         try:
-            # Generate query embedding
+            # Generate query embedding (cached)
             target_dim = self._infer_collection_dimension(self.kb_collection)
-            q_emb = embed_texts([query], target_dim=target_dim)[0]
+            q_emb = get_query_embedding_cached(query, target_dim=target_dim)
             
             # Query the collection
             results = self.kb_collection.query(
@@ -148,19 +148,6 @@ class HybridRetriever:
             List of result dicts with keys: text, metadata, score, source_type
         """
         results = []
-        embedding_cache: Dict[Optional[int], Optional[List[float]]] = {}
-
-        def get_query_embedding(target_dim: Optional[int]) -> Optional[List[float]]:
-            """Cache query embeddings per dimension to avoid duplicate API calls."""
-            cache_key = target_dim if target_dim is not None else -1
-            if cache_key in embedding_cache:
-                return embedding_cache[cache_key]
-            try:
-                embedding_cache[cache_key] = embed_texts([query], target_dim=target_dim)[0]
-            except Exception as exc:
-                print(f"Error generating query embedding for dimension {target_dim}: {exc}")
-                embedding_cache[cache_key] = None
-            return embedding_cache[cache_key]
 
         # Determine which collections to query
         collections = []
@@ -175,7 +162,7 @@ class HybridRetriever:
         for emb_type, collection in collections:
             try:
                 target_dim = self._infer_collection_dimension(collection)
-                q_emb = get_query_embedding(target_dim)
+                q_emb = get_query_embedding_cached(query, target_dim=target_dim)
                 if q_emb is None:
                     continue
 
