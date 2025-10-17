@@ -85,8 +85,8 @@ def render_sources(sources):
 
 def call_llm(
     prompt: str,
-    temperature: float = 0.2,
-    max_tokens: int = 1200,
+    temperature: float = 0.6,
+    max_tokens: int = 4000,
     system_prompt: str = "You are a Flight Test engineering assistant. Be precise and cite sources when provided.",
 ) -> str:
     if not OPENAI_API_KEY:
@@ -160,8 +160,8 @@ with left:
                             prompt=query,
                             system_prompt=system_prompt,
                             df=df,
-                            temperature=0.2,
-                            max_tokens=1200,
+                            temperature=0.6,
+                            max_tokens=4000,
                             detail_level=detail_level,
                             enable_tools=True,
                         )
@@ -227,8 +227,8 @@ Answer:"""
                                 prompt=prompt,
                                 system_prompt=system_prompt,
                                 df=st.session_state.get("data"),
-                                temperature=0.2,
-                                max_tokens=1200,
+                                temperature=0.6,
+                                max_tokens=4000,
                                 detail_level=detail_level,
                                 enable_tools=True,
                             )
@@ -300,7 +300,7 @@ Goal:
 If a timeframe was selected on the main page, focus your narrative on that interval.
 {background_section}
 Format:
-1. Executive Summary (<= 150 words)
+1. Executive Summary (<= 1000 words)
 2. Data Overview (sampling, parameters monitored, timeframe)
 3. Findings and Trends (quantitative; refer to signals by their names)
 4. Anomalies and Events (possible causes and implications)
@@ -323,7 +323,7 @@ Be concise, technical, and specific to the dataset.
                         system_prompt=system_prompt,
                         df=df,
                         temperature=temperature,
-                        max_tokens=1400,
+                        max_tokens=4000,
                         detail_level=detail_level_r,
                         enable_tools=True,
                         extra_context="When producing summary statistics or compact parameter tables, prefer the 'create_table' and 'compute_stats' tools.",
