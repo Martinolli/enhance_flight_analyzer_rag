@@ -16,10 +16,10 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from components.rag.retrieval import retrieve
 from components.rag.bootstrap import ensure_rag_db
 from components.llm.assistant import ToolEnabledLLM  # NEW
 from components.data_ingest import DataIngestor
+from components.rag.hybrid_retrieval import HybridRetriever
 
 st.subheader("📁 Upload Flight Data")
 uploaded_file = st.file_uploader("Upload CSV or Excel", type=["csv", "xlsx", "parquet"])
@@ -57,7 +57,6 @@ except Exception:
 
 MODEL_NAME = os.getenv("OPENAI_MODEL", "gpt-4-turbo")  # change as desired
 
-st.set_page_config(page_title="Knowledge & Report Assistant", page_icon="🧭", layout="wide")
 st.title("🧭 Knowledge & Report Assistant")
 
 # Helper to summarize current dataset
@@ -79,14 +78,16 @@ def render_sources(sources):
         st.info("No sources used.")
         return
     for i, h in enumerate(sources, 1):
-        with st.expander(f"Source {i} ({h.get('source', 'KB')})", expanded=False):
-            st.caption(h.get("metadata", {}).get("path", ""))
-            st.write(h.get("text", "")[:2000])
+        with st.expander(f"Source {i} ({h.get('source_type', 'KB')})", expanded=False):
+            meta = h.get("metadata", {}) if isinstance(h, dict) else {}
+            st.caption(meta.get("source") or meta.get("path") or meta.get("file_name", ""))
+            text = h.get("text", "") if isinstance(h, dict) else h.get("text", "")
+            st.write(text[:2000])
 
 def call_llm(
     prompt: str,
-    temperature: float = 0.2,
-    max_tokens: int = 1200,
+    temperature: float = 0.6,
+    max_tokens: int = 4000,
     system_prompt: str = "You are a Flight Test engineering assistant. Be precise and cite sources when provided.",
 ) -> str:
     if not OPENAI_API_KEY:
@@ -104,6 +105,18 @@ def call_llm(
         max_tokens=max_tokens,
     )
     return resp.choices[0].message.content
+
+
+@st.cache_data(ttl=300)
+def cached_retrieve(query: str, k: int, db_path: str, sources: tuple[str, ...], file_id: str | None = None):
+    retriever = HybridRetriever(db_path=db_path)
+    if "kb" in sources and "data" in sources:
+        return retriever.retrieve_hybrid(query, k=k, sources=list(sources), weights={"kb": 0.5, "data": 0.5}, file_id=file_id)
+    elif "kb" in sources:
+        return retriever.retrieve_from_kb(query, k=k)
+    elif "data" in sources:
+        return retriever.retrieve_from_data(query, k=k, file_id=file_id)
+    return []
 
 
 # Left: KB query; Right: Report generation
@@ -136,6 +149,11 @@ with left:
         help="Allow the model to compute stats and emit tables from your uploaded dataset.",
     )
     db_path = st.text_input("Vector DB path", value=".ragdb")
+    include_data_context = st.checkbox(
+        "Include uploaded data context",
+        value=True,
+        help="Augment citations with semantic matches from your uploaded data embeddings.",
+    )
     fallback_to_model = st.checkbox(
         "Fallback to model-only if KB has no hits",
         value=True,
@@ -160,8 +178,8 @@ with left:
                             prompt=query,
                             system_prompt=system_prompt,
                             df=df,
-                            temperature=0.2,
-                            max_tokens=1200,
+                            temperature=0.6,
+                            max_tokens=4000,
                             detail_level=detail_level,
                             enable_tools=True,
                         )
@@ -193,30 +211,37 @@ with left:
                 if not ensure_rag_db(db_path=db_path):
                     st.error("Knowledge base not available. Initialize it below or check your path.")
                 else:
-                    with st.spinner("Retrieving from KB..."):
-                        hits = retrieve(query, k=top_k, db_path=db_path)
+                    with st.spinner("Retrieving context..."):
+                        sources = ["kb", "data"] if include_data_context else ["kb"]
+                        hits = cached_retrieve(query, top_k, db_path, tuple(sources))
 
                     if not hits and not fallback_to_model:
                         st.info("No KB hits found. Enable fallback to answer from general knowledge or refine your query.")
                     else:
-                        # Compose prompt depending on scope
-                        context = "\n\n".join([f"[Source {i+1}] {h['text']}" for i, h in enumerate(hits)])
+                        # Split sources for better citation labeling
+                        kb_hits = [h for h in hits if h.get("source_type") == "kb"]
+                        data_hits = [h for h in hits if h.get("source_type") == "data"]
 
-                        if hits:
-                            kb_section = f"\n\nSources:\n{context}\n"
-                        else:
-                            kb_section = ""
+                        kb_section = ""
+                        if kb_hits:
+                            context_kb = "\n\n".join([f"[KB {i+1}] {h['text']}" for i, h in enumerate(kb_hits)])
+                            kb_section += f"\n\nKnowledge Base Sources:\n{context_kb}\n"
+
+                        data_section = ""
+                        if data_hits:
+                            context_data = "\n\n".join([f"[DATA {i+1}] {h['text']}" for i, h in enumerate(data_hits)])
+                            data_section += f"\n\nData Context (semantic matches):\n{context_data}\n"
 
                         if scope == "Prefer KB (default)":
-                            prompt = f"""Ground your answer primarily in the provided sources. Cite as [Source N]. If the sources are insufficient, say what is missing and answer briefly using general knowledge.
+                            prompt = f"""Ground your answer primarily in the provided sources. Cite as [KB N] or [DATA N]. If the sources are insufficient, say what is missing and answer briefly using general knowledge.
 Question: {query}
-{kb_section}
+{kb_section}{data_section}
 Answer:"""
                             system_prompt = "You are a Flight Test engineering assistant. Be precise and cite sources when provided."
                         else:  # KB + Model knowledge
-                            prompt = f"""Use both the provided sources and your broader Flight Test knowledge. When a statement is directly supported by a source, cite it as [Source N]. For domain knowledge not in the sources, include it without a [Source] tag. If sources conflict, note the discrepancy.
+                            prompt = f"""Use both the provided sources and your broader Flight Test knowledge. When a statement is directly supported by a source, cite it as [KB N] or [DATA N]. For domain knowledge not in the sources, include it without a [Source] tag. If sources conflict, note the discrepancy.
 Question: {query}
-{kb_section}
+{kb_section}{data_section}
 Answer:"""
                             system_prompt = "You are a Flight Test engineering assistant. Be precise and cite sources when provided."
 
@@ -227,8 +252,8 @@ Answer:"""
                                 prompt=prompt,
                                 system_prompt=system_prompt,
                                 df=st.session_state.get("data"),
-                                temperature=0.2,
-                                max_tokens=1200,
+                                temperature=0.6,
+                                max_tokens=4000,
                                 detail_level=detail_level,
                                 enable_tools=True,
                             )
@@ -285,7 +310,9 @@ with right:
             background_section = ""
             if ensure_rag_db(db_path=db_path2):
                 with st.spinner("Retrieving report context from KB..."):
-                    hits = retrieve(goal, k=rag_k, db_path=db_path2)
+                    # Reuse hybrid retriever if desired later; KB-only is fine here
+                    retriever = HybridRetriever(db_path=db_path2)
+                    hits = retriever.retrieve_from_kb(goal, k=rag_k)
 
             if hits:
                 background_section = "Knowledge Base Context:\n" + "\n\n".join(
@@ -300,7 +327,7 @@ Goal:
 If a timeframe was selected on the main page, focus your narrative on that interval.
 {background_section}
 Format:
-1. Executive Summary (<= 150 words)
+1. Executive Summary (<= 1000 words)
 2. Data Overview (sampling, parameters monitored, timeframe)
 3. Findings and Trends (quantitative; refer to signals by their names)
 4. Anomalies and Events (possible causes and implications)
@@ -323,7 +350,7 @@ Be concise, technical, and specific to the dataset.
                         system_prompt=system_prompt,
                         df=df,
                         temperature=temperature,
-                        max_tokens=1400,
+                        max_tokens=4000,
                         detail_level=detail_level_r,
                         enable_tools=True,
                         extra_context="When producing summary statistics or compact parameter tables, prefer the 'create_table' and 'compute_stats' tools.",

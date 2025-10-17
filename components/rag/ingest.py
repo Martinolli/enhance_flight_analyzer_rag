@@ -20,6 +20,7 @@ How to use:
 
 import os
 from typing import List, Optional, Dict
+from functools import lru_cache
 
 # Load environment variables from .env file
 from dotenv import load_dotenv
@@ -184,7 +185,64 @@ def embed_texts(
     return all_embeddings
 
 
-def ingest_documents(source_dir: str, db_path: str = ".ragdb", chunk_size: int = 500):
+@lru_cache(maxsize=256)
+def get_query_embedding_cached(query: str, target_dim: Optional[int] = None) -> List[float]:
+    """
+    Cached helper for single-query embeddings to reduce latency and API calls across repeated queries.
+    The cache key is (query, target_dim).
+    """
+    return embed_texts([query], target_dim=target_dim)[0]
+
+
+def _add_to_collection_batched(
+    collection,
+    documents: List[str],
+    embeddings: List[List[float]],
+    metadatas: List[Dict],
+    ids: List[str],
+    batch_size: int,
+):
+    """Safely add records to Chroma in batches, adapting to server limits."""
+    try:
+        from chromadb.errors import InternalError  # type: ignore
+    except Exception:
+        InternalError = Exception  # Fallback
+
+    n = len(documents)
+    i = 0
+    while i < n:
+        end = min(i + batch_size, n)
+        try:
+            collection.add(
+                documents=documents[i:end],
+                embeddings=embeddings[i:end],
+                metadatas=metadatas[i:end],
+                ids=ids[i:end],
+            )
+            i = end
+        except InternalError as e:
+            msg = str(e)
+            import re
+            m = re.search(r"max batch size of (\d+)", msg)
+            if m:
+                # Use server-reported limit minus 1 to be safe
+                new_bs = max(1, min(int(m.group(1)) - 1, batch_size - 1))
+            else:
+                # Exponential backoff if unknown; never drop below 1
+                new_bs = max(1, batch_size // 2)
+            if new_bs == batch_size:
+                raise
+            print(f"Chroma rejected batch of size {batch_size}. Retrying with batch_size={new_bs}...")
+            batch_size = new_bs
+    print("All batches added to Chroma.")
+
+
+def ingest_documents(
+        source_dir: str,
+        db_path: str = ".ragdb",
+        chunk_size: int = 500,
+        add_batch_size: Optional[int] = None
+        ):
     """
     Ingest documents from source_dir into ChromaDB at db_path.
     """
@@ -264,15 +322,22 @@ def ingest_documents(source_dir: str, db_path: str = ".ragdb", chunk_size: int =
     # Generate embeddings
     embeddings = embed_texts(documents, target_dim=target_dim)
     
-    # Add to collection
-    collection.add(
+    # Add to collection in batches to avoid Chroma max batch size errors
+    if add_batch_size is None:
+        # Default safe size; can be overridden via arg or env
+        add_batch_size = int(os.getenv("CHROMA_ADD_BATCH_SIZE", "4000"))
+    print(f"Adding to Chroma in batches of up to {add_batch_size}...")
+    _add_to_collection_batched(
+        collection=collection,
         documents=documents,
         embeddings=embeddings,
         metadatas=metadatas,
-        ids=ids
+        ids=ids,
+        batch_size=add_batch_size,
     )
     
     print(f"Successfully ingested {len(documents)} chunks into {db_path}")
+
 
 
 def extract_pdf_text(pdf_path: str) -> str:
@@ -365,11 +430,12 @@ if __name__ == "__main__":
     parser.add_argument("--source", required=True, help="Source directory containing documents")
     parser.add_argument("--db", default=".ragdb", help="ChromaDB database path")
     parser.add_argument("--chunk-size", type=int, default=500, help="Text chunk size")
+    parser.add_argument("--add-batch-size", type=int, default=None, help="Max rows per add() call (defaults to 4000)")
     
     args = parser.parse_args()
     
     try:
-        ingest_documents(args.source, args.db, args.chunk_size)
+        ingest_documents(args.source, args.db, args.chunk_size, args.add_batch_size)
     except Exception as e:
         print(f"Error during ingestion: {e}")
         exit(1)

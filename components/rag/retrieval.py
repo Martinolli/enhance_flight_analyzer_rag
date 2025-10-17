@@ -2,7 +2,7 @@ from typing import List, Dict, Any
 
 import chromadb
 
-from .ingest import embed_texts
+from .ingest import get_query_embedding_cached
 
 COLLECTION_NAME = "flight_test_kb"
 
@@ -25,7 +25,7 @@ def get_collection(db_path: str):
 def retrieve(query: str, k: int = 6, db_path: str = ".ragdb") -> List[Dict[str, Any]]:
     coll = get_collection(db_path)
     target_dim = _infer_collection_dimension(coll) or None
-    q_emb = embed_texts([query], target_dim=target_dim)[0]
+    q_emb = get_query_embedding_cached(query, target_dim=target_dim)
     res = coll.query(
         query_embeddings=[q_emb],
         n_results=max(1, k),
