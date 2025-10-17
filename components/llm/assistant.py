@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
@@ -12,6 +13,11 @@ except Exception:
     st = None  # Non-Streamlit environments
 
 from openai import OpenAI
+
+# NEW: Stats engine
+from components.statistical_analysis import FlightDataStatistics
+# NEW: Simple NL query analyzer
+from components.query_understanding import QueryAnalyzer
 
 
 def _safe_json_dumps(obj: Any) -> str:
@@ -44,13 +50,75 @@ def _sectionize_markdown(md: str) -> Dict[str, str]:
     return sections
 
 
+# NEW: DDD:HH:MM:SS(.mmm) flight-time parser
+_TIME_RE = re.compile(
+    r"^\s*(?P<d>\d{1,3}):(?P<h>\d{2}):(?P<m>\d{2}):(?P<s>\d{2})(?:\.(?P<ms>\d{1,3}))?\s*$"
+)
+
+def _parse_flight_time_index(s: str) -> Optional[float]:
+    """
+    Parse DDD:HH:MM:SS(.mmm) into total seconds (float).
+    Returns None if invalid.
+    """
+    if not isinstance(s, str) or not s.strip():
+        return None
+    m = _TIME_RE.match(s.strip())
+    if not m:
+        return None
+    d = int(m.group("d"))
+    h = int(m.group("h"))
+    mnt = int(m.group("m"))
+    sec = int(m.group("s"))
+    ms = int(m.group("ms") or 0)
+    total_seconds = d * 86400 + h * 3600 + mnt * 60 + sec + ms / 1000.0
+    return float(total_seconds)
+
+
+def _apply_time_window_filter(
+    df: pd.DataFrame,
+    time_window: Optional[Dict[str, Any]],
+) -> pd.DataFrame:
+    """
+    Filter df by a time_window dict:
+      { "start": "DDD:HH:MM:SS.mmm", "end": "...", "time_column": "Elapsed Time (s)" }
+    - Defaults to time_column='Elapsed Time (s)' if present.
+    - Silently returns df if parsing fails or column missing.
+    """
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+        return df
+    if not isinstance(time_window, dict):
+        return df
+
+    time_col = time_window.get("time_column")
+    if not time_col:
+        time_col = "Elapsed Time (s)" if "Elapsed Time (s)" in df.columns else None
+    if not time_col or time_col not in df.columns:
+        return df
+
+    start_s = _parse_flight_time_index(str(time_window.get("start", ""))) if time_window.get("start") else None
+    end_s = _parse_flight_time_index(str(time_window.get("end", ""))) if time_window.get("end") else None
+    try:
+        x = pd.to_numeric(df[time_col], errors="coerce")
+        mask = pd.Series(True, index=df.index)
+        if start_s is not None:
+            mask &= x >= start_s
+        if end_s is not None:
+            mask &= x <= end_s
+        sub = df.loc[mask]
+        return sub
+    except Exception:
+        return df
+
+
 class ToolEnabledLLM:
     """
     Wrapper around OpenAI Chat with tool calling to:
       - inspect DataFrame schema
-      - compute basic stats on columns
+      - compute basic stats on columns (optionally within a time window)
       - generate well-structured tables
       - propose actionable calculation suggestions
+      - query uploaded data embeddings (if available)
+      - NEW: anomaly/trend/correlation analysis via FlightDataStatistics
     """
 
     def __init__(
@@ -67,6 +135,8 @@ class ToolEnabledLLM:
         self.generated_tables: List[Tuple[str, pd.DataFrame]] = []
         # Store calculation suggestions (textual)
         self.suggestions: List[Dict[str, Any]] = []
+        # Internal hinting (from QueryAnalyzer)
+        self._detected_time_window: Optional[Dict[str, str]] = None
 
     def _build_tool_schemas(self, df: Optional[pd.DataFrame]) -> List[Dict[str, Any]]:
         # Always available tools (do not depend on df)
@@ -131,6 +201,29 @@ class ToolEnabledLLM:
                     },
                 },
             },
+            # Ensure this schema exists (used by Report Assistant hybrid data retrieval)
+            {
+                "type": "function",
+                "function": {
+                    "name": "query_uploaded_data",
+                    "description": "Semantic search over uploaded data embeddings to retrieve relevant rows/columns/summaries.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {"type": "string", "description": "Natural language query to search in uploaded data"},
+                            "k": {"type": "integer", "description": "Top results to return", "default": 5},
+                            "file_id": {"type": "string", "description": "Optional file ID to limit search"},
+                            "embedding_type": {
+                                "type": "string",
+                                "enum": ["row", "column", "summary", "all"],
+                                "description": "Which embeddings to search",
+                                "default": "all"
+                            },
+                        },
+                        "required": ["query"],
+                    },
+                },
+            },
         ]
 
         # Data-aware tools (only when df is available)
@@ -149,7 +242,7 @@ class ToolEnabledLLM:
                         "type": "function",
                         "function": {
                             "name": "compute_stats",
-                            "description": "Compute basic statistics for specified numeric columns.",
+                            "description": "Compute basic statistics for specified numeric columns. Optionally restrict by a time window.",
                             "parameters": {
                                 "type": "object",
                                 "properties": {
@@ -175,6 +268,115 @@ class ToolEnabledLLM:
                                         },
                                         "description": "Metrics to compute",
                                     },
+                                    "time_window": {
+                                        "type": "object",
+                                        "description": "Optional time window to filter rows using Elapsed Time (s) or another numeric time column. Supports DDD:HH:MM:SS.mmm.",
+                                        "properties": {
+                                            "start": {"type": "string", "description": "Start time (e.g., 001:10:15:00.000)"},
+                                            "end": {"type": "string", "description": "End time (e.g., 001:10:20:00.000)"},
+                                            "time_column": {"type": "string", "description": "Time column name, defaults to 'Elapsed Time (s)' if present."}
+                                        }
+                                    }
+                                },
+                                "required": ["columns"],
+                            },
+                        },
+                    },
+                    # NEW: Anomaly detection tool (IQR/Z-score/Modified Z)
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "analyze_anomalies",
+                            "description": "Detect outliers/anomalies in specified columns using IQR, Z-score, or Modified Z-score. Optionally restrict by a time window.",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "columns": {
+                                        "type": "array",
+                                        "items": {"type": "string"},
+                                        "description": "Columns to analyze for anomalies",
+                                    },
+                                    "method": {
+                                        "type": "string",
+                                        "enum": ["iqr", "zscore", "modified_zscore"],
+                                        "default": "iqr",
+                                        "description": "Outlier detection method"
+                                    },
+                                    "time_window": {
+                                        "type": "object",
+                                        "description": "Optional time window to filter rows. Supports DDD:HH:MM:SS.mmm.",
+                                        "properties": {
+                                            "start": {"type": "string"},
+                                            "end": {"type": "string"},
+                                            "time_column": {"type": "string"}
+                                        }
+                                    }
+                                },
+                                "required": ["columns"],
+                            },
+                        },
+                    },
+                    # NEW: Trend analysis tool
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "analyze_trends",
+                            "description": "Perform linear trend analysis on columns over time. Returns slope, R², p-value, and direction. Optionally restrict by a time window.",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "columns": {
+                                        "type": "array",
+                                        "items": {"type": "string"},
+                                        "description": "Columns to analyze for trends",
+                                    },
+                                    "time_column": {
+                                        "type": "string",
+                                        "description": "Time column name, default 'Elapsed Time (s)'"
+                                    },
+                                    "time_window": {
+                                        "type": "object",
+                                        "description": "Optional time window to filter rows. Supports DDD:HH:MM:SS.mmm.",
+                                        "properties": {
+                                            "start": {"type": "string"},
+                                            "end": {"type": "string"},
+                                            "time_column": {"type": "string"}
+                                        }
+                                    }
+                                },
+                                "required": ["columns"],
+                            },
+                        },
+                    },
+                    # NEW: Correlation analysis tool
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "analyze_correlations",
+                            "description": "Compute correlation matrix and strongest pairs for specified columns. Optionally restrict by a time window.",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "columns": {
+                                        "type": "array",
+                                        "items": {"type": "string"},
+                                        "description": "Columns to include in correlation analysis",
+                                    },
+                                    "method": {
+                                        "type": "string",
+                                        "enum": ["pearson", "spearman", "kendall"],
+                                        "default": "pearson",
+                                        "description": "Correlation method"
+                                    },
+                                    "time_window": {
+                                        "type": "object",
+                                        "description": "Optional time window to filter rows. Supports DDD:HH:MM:SS.mmm.",
+                                        "properties": {
+                                            "start": {"type": "string"},
+                                            "end": {"type": "string"},
+                                            "time_column": {"type": "string"}
+                                        }
+                                    }
                                 },
                                 "required": ["columns"],
                             },
@@ -212,13 +414,22 @@ class ToolEnabledLLM:
                     "metrics",
                     ["count", "mean", "std", "min", "median", "max", "p10", "p90"],
                 )
-                numeric_cols = [c for c in cols if c in df.columns and pd.api.types.is_numeric_dtype(df[c])]
+
+                # Optional time window filter
+                sub_df = df
+                tw = arguments.get("time_window")
+                if isinstance(tw, dict) or self._detected_time_window:
+                    # Prefer explicit tool arg; fallback to detected hint
+                    tw_eff = tw or self._detected_time_window
+                    sub_df = _apply_time_window_filter(df, tw_eff)
+
+                numeric_cols = [c for c in cols if c in sub_df.columns and pd.api.types.is_numeric_dtype(sub_df[c])]
                 if not numeric_cols:
                     return _safe_json_dumps({"error": "No valid numeric columns in request"})
 
                 result_rows: List[Dict[str, Any]] = []
                 for c in numeric_cols:
-                    series = pd.to_numeric(df[c], errors="coerce")
+                    series = pd.to_numeric(sub_df[c], errors="coerce")
                     row: Dict[str, Any] = {"column": c}
                     if "count" in metrics:
                         row["count"] = int(series.count())
@@ -275,10 +486,116 @@ class ToolEnabledLLM:
                         k=int(arguments.get("k", 5)),
                         sources=["data"],
                         weights={"kb": 0.0, "data": 1.0},
+                        file_id=arguments.get("file_id") or None,
                     )
+                    # No UI table here – Report Assistant renders citations
                     return _safe_json_dumps({"results": results})
                 except Exception as e:
                     return _safe_json_dumps({"error": f"query_uploaded_data failed: {e}"})
+
+            # NEW: anomaly detection
+            if name == "analyze_anomalies":
+                if df is None:
+                    return _safe_json_dumps({"error": "No dataset available"})
+                cols = [c for c in (arguments.get("columns") or []) if c in df.columns]
+                if not cols:
+                    return _safe_json_dumps({"error": "No valid columns specified"})
+                method = arguments.get("method", "iqr") or "iqr"
+                sub_df = df
+                tw = arguments.get("time_window")
+                if isinstance(tw, dict) or self._detected_time_window:
+                    sub_df = _apply_time_window_filter(df, tw or self._detected_time_window)
+
+                stats = FlightDataStatistics()
+                try:
+                    res = stats.detect_outliers(sub_df, cols, method=method)
+                except Exception as e:
+                    return _safe_json_dumps({"error": f"detect_outliers failed: {e}"})
+
+                # Build compact table
+                rows = []
+                for param, info in (res or {}).items():
+                    bounds = info.get("bounds", {}) if isinstance(info, dict) else {}
+                    rows.append([
+                        param,
+                        int(info.get("outlier_count", 0)),
+                        float(info.get("outlier_percentage", 0.0)),
+                        str(info.get("method", method)).upper(),
+                        bounds.get("lower"),
+                        bounds.get("upper")
+                    ])
+                df_tbl = pd.DataFrame(rows, columns=["Parameter", "Outliers", "Outlier %", "Method", "Lower", "Upper"])
+                self.generated_tables.append(("Anomaly Detection", df_tbl))
+                return _safe_json_dumps({"ok": True, "results": res})
+
+            # NEW: trend analysis
+            if name == "analyze_trends":
+                if df is None:
+                    return _safe_json_dumps({"error": "No dataset available"})
+                cols = [c for c in (arguments.get("columns") or []) if c in df.columns]
+                if not cols:
+                    return _safe_json_dumps({"error": "No valid columns specified"})
+                time_col = arguments.get("time_column") or ("Elapsed Time (s)" if "Elapsed Time (s)" in df.columns else None)
+                if not time_col or time_col not in df.columns:
+                    return _safe_json_dumps({"error": "Time column not found. Provide 'time_column' or include 'Elapsed Time (s)'."})
+
+                sub_df = df
+                tw = arguments.get("time_window")
+                if isinstance(tw, dict) or self._detected_time_window:
+                    sub_df = _apply_time_window_filter(df, tw or self._detected_time_window)
+
+                stats = FlightDataStatistics()
+                try:
+                    res = stats.perform_trend_analysis(sub_df, time_col, cols)
+                except Exception as e:
+                    return _safe_json_dumps({"error": f"perform_trend_analysis failed: {e}"})
+
+                # Compact table
+                rows = []
+                for param, info in (res or {}).items():
+                    lin = info.get("linear_trend", {}) if isinstance(info, dict) else {}
+                    rows.append([
+                        param,
+                        lin.get("trend_direction", ""),
+                        float(lin.get("slope", 0.0)),
+                        float(lin.get("r_squared", 0.0)),
+                        float(lin.get("p_value", 1.0)),
+                        "Yes" if float(lin.get("p_value", 1.0)) < 0.05 else "No",
+                        int(info.get("data_points", 0))
+                    ])
+                df_tbl = pd.DataFrame(rows, columns=["Parameter", "Direction", "Slope", "R²", "p-value", "Significant", "Points"])
+                self.generated_tables.append(("Trend Analysis", df_tbl))
+                return _safe_json_dumps({"ok": True, "results": res})
+
+            # NEW: correlation analysis
+            if name == "analyze_correlations":
+                if df is None:
+                    return _safe_json_dumps({"error": "No dataset available"})
+                cols = [c for c in (arguments.get("columns") or []) if c in df.columns]
+                if not cols or len(cols) < 2:
+                    return _safe_json_dumps({"error": "Provide at least two valid columns"})
+                method = arguments.get("method", "pearson") or "pearson"
+                sub_df = df
+                tw = arguments.get("time_window")
+                if isinstance(tw, dict) or self._detected_time_window:
+                    sub_df = _apply_time_window_filter(df, tw or self._detected_time_window)
+
+                stats = FlightDataStatistics()
+                try:
+                    res = stats.compute_correlation_analysis(sub_df, cols, method=method)
+                except Exception as e:
+                    return _safe_json_dumps({"error": f"compute_correlation_analysis failed: {e}"})
+
+                # Top pairs table (if provided)
+                pairs = res.get("strongest_correlations", []) if isinstance(res, dict) else []
+                pair_rows = []
+                for it in pairs[:10]:
+                    pair_rows.append([it.get("param1"), it.get("param2"), float(it.get("correlation", 0.0))])
+                if pair_rows:
+                    df_pairs = pd.DataFrame(pair_rows, columns=["Param 1", "Param 2", "Correlation"])
+                    self.generated_tables.append(("Top Correlations", df_pairs))
+
+                return _safe_json_dumps({"ok": True, "results": res})
 
             return _safe_json_dumps({"error": f"Unknown tool: {name}"})
         except Exception as e:
@@ -307,6 +624,7 @@ class ToolEnabledLLM:
         """
         self.generated_tables.clear()
         self.suggestions.clear()
+        self._detected_time_window = None
 
         messages: List[Dict[str, str]] = []
 
@@ -317,8 +635,19 @@ class ToolEnabledLLM:
             schema_hint = (
                 "Dataset schema (first 50 columns shown):\n"
                 + ", ".join(sample_cols)
-                + "\nIf you need to compute stats or produce tables, use the available tools."
+                + "\nIf you need to compute stats, detect anomalies, analyze trends, or produce tables, use the available tools."
             )
+
+        # NEW: Use a simple QueryAnalyzer to detect time window hints from NL prompt
+        if prompt and df is not None and not df.empty:
+            try:
+                qa = QueryAnalyzer()
+                tw = qa.detect_time_window(prompt)
+                # If analyzer found a window, record and hint to the model
+                if tw and (tw.get("start") or tw.get("end")):
+                    self._detected_time_window = tw
+            except Exception:
+                pass
 
         detail_instruction = {
             "brief": "Be concise. Prioritize high-level insights. Use tables only if critical.",
@@ -334,12 +663,22 @@ class ToolEnabledLLM:
         )
 
         if enable_tools:
-            system += "- Use tools for data inspection, statistics, and emitting tabular outputs instead of fabricating numeric results.\n"
+            system += "- Use tools for data inspection, statistics, anomaly detection, trend, correlation, and emitting tabular outputs; do not fabricate numeric results.\n"
         else:
             system += "- Do not invent specific numeric values; describe the method to compute them if needed.\n"
 
         if schema_hint:
             system += "\n" + schema_hint
+
+        # Hint the model about any detected time window so it can pass it in tool calls
+        if self._detected_time_window:
+            det = self._detected_time_window
+            system += (
+                "\nDetected time window from the user's query: "
+                f"{det.get('start','?')} → {det.get('end','?')} "
+                f"(time_column='{det.get('time_column','Elapsed Time (s)')}'). "
+                "When calling tools, include this as the 'time_window' parameter."
+            )
 
         if extra_context:
             system += "\n" + extra_context
@@ -360,7 +699,6 @@ class ToolEnabledLLM:
                 tool_choice="auto" if enable_tools else None,
             )
             choice = resp.choices[0]
-            finish_reason = getattr(choice, "finish_reason", None)
 
             # If tool calls exist, handle them
             tool_calls = getattr(choice.message, "tool_calls", None)
