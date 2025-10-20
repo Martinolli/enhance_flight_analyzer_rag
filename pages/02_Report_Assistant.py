@@ -55,7 +55,7 @@ except Exception:
     # Fallback if no secrets.toml file exists
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-MODEL_NAME = os.getenv("OPENAI_MODEL", "gpt-5")  # change as desired
+MODEL_NAME = os.getenv("OPENAI_MODEL", "gpt-4.1")  # change as desired
 
 st.title("🧭 Knowledge & Report Assistant")
 
