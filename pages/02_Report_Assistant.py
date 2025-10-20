@@ -55,7 +55,7 @@ except Exception:
     # Fallback if no secrets.toml file exists
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-MODEL_NAME = os.getenv("OPENAI_MODEL", "gpt-5")  # change as desired
+MODEL_NAME = os.getenv("OPENAI_MODEL", "gpt-4.1")  # change as desired
 
 st.title("🧭 Knowledge & Report Assistant")
 
@@ -102,7 +102,7 @@ def call_llm(
             {"role": "user", "content": prompt},
         ],
         temperature=temperature,
-        max_completion_tokens=max_tokens,
+        max_tokens=max_tokens,
     )
     return resp.choices[0].message.content
 
@@ -179,7 +179,7 @@ with left:
                             system_prompt=system_prompt,
                             df=df,
                             temperature=0.6,
-                            max_completion_tokens=4000,
+                            max_tokens=4000,
                             detail_level=detail_level,
                             enable_tools=True,
                         )
@@ -253,7 +253,7 @@ Answer:"""
                                 system_prompt=system_prompt,
                                 df=st.session_state.get("data"),
                                 temperature=0.6,
-                                max_completion_tokens=4000,
+                                max_tokens=4000,
                                 detail_level=detail_level,
                                 enable_tools=True,
                             )
@@ -350,7 +350,7 @@ Be concise, technical, and specific to the dataset.
                         system_prompt=system_prompt,
                         df=df,
                         temperature=temperature,
-                        max_completion_tokens=4000,
+                        max_tokens=4000,
                         detail_level=detail_level_r,
                         enable_tools=True,
                         extra_context="When producing summary statistics or compact parameter tables, prefer the 'create_table' and 'compute_stats' tools.",
@@ -371,7 +371,7 @@ Be concise, technical, and specific to the dataset.
                                     mime="text/csv",
                                 )
                 else:
-                    report = call_llm(prompt, temperature=temperature, mmax_completion_tokens=1400, system_prompt=system_prompt)
+                    report = call_llm(prompt, temperature=temperature, max_tokens=1400, system_prompt=system_prompt)
                     st.markdown("### Report")
                     with st.expander("Full report", expanded=True):
                         st.write(report)

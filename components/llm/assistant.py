@@ -128,7 +128,7 @@ class ToolEnabledLLM:
         max_rounds: int = 4,
     ):
         self.api_key = api_key or os.getenv("OPENAI_API_KEY")
-        self.model = model or os.getenv("OPENAI_MODEL", "gpt-4-turbo")
+        self.model = model or os.getenv("OPENAI_MODEL", "gpt-4.1")
         self.max_rounds = max_rounds
         self.client = OpenAI(api_key=self.api_key)
         # Store tables the model asks to generate via tool calls
