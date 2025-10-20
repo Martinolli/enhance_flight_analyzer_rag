@@ -55,7 +55,7 @@ except Exception:
     # Fallback if no secrets.toml file exists
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-MODEL_NAME = os.getenv("OPENAI_MODEL", "gpt-4.1")  # change as desired
+MODEL_NAME = os.getenv("OPENAI_MODEL", "gpt-5")  # change as desired
 
 st.title("🧭 Knowledge & Report Assistant")
 
@@ -102,7 +102,7 @@ def call_llm(
             {"role": "user", "content": prompt},
         ],
         temperature=temperature,
-        max_tokens=max_tokens,
+        max_completion_tokens=max_tokens,
     )
     return resp.choices[0].message.content
 
