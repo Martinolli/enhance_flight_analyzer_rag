@@ -1,0 +1,155 @@
+Here’s a focused, repo-aware analysis against your three feature goals, with concrete gaps and implementation steps tied to the code you already have.
+
+High-level fit summary
+- You already have strong foundations for features 2 and 3:
+  - Automated analysis: FlightDataStatistics is wired into ToolEnabledLLM with tools analyze_anomalies, analyze_trends, analyze_correlations. Time window parsing (DDD:HH:MM:SS.mmm) and filtering are in place.
+  - Report/narration: pages/02_Report_Assistant.py uses ToolEnabledLLM to produce structured responses with tables and suggestions, and HybridRetriever for KB/data citations.
+- The biggest missing piece is feature 1 (Natural Language Data Querying). You have partial building blocks (query_uploaded_data for semantic data references and a QueryAnalyzer time-window hint), but no end-to-end pipeline to resolve user phrases into dataset columns/conditions and return filtered series or visualizations.
+
+Detailed analysis by feature
+
+1) Natural Language Data Querying
+What’s in place
+- ToolEnabledLLM:
+  - Time parsing and windowing: _parse_flight_time_index and _apply_time_window_filter are robust and used in compute_stats and other tools.
+  - query_uploaded_data tool: connects to HybridRetriever to perform semantic retrieval over uploaded data embeddings (rows/columns/summaries). Good for “which column matches this concept?” use-cases.
+  - QueryAnalyzer.detect_time_window is referenced and used to pass time_window hints into tool calls.
+- HybridRetriever:
+  - Can retrieve from uploaded data columns/summaries. This can be leveraged to map natural entities (e.g., “engine oil pressure”) to real column names.
+
+Gaps to address
+- No explicit parameter resolution step from NL into concrete dataset columns. The model can try to guess, but accuracy improves if you expose a “resolve_parameters” tool that searches data column embeddings and returns top column candidates with scores.
+- No general “filter rows” or “get series” tool. There’s compute_stats and analysis tools, but the LLM can’t yet retrieve and present time-filtered series/subsets or boolean matches (e.g., “landing gear down”).
+- No phase understanding. “initial climb phase” requires either a Flight_Phase column or a heuristic phase detector.
+- UI: No dedicated “Natural language data query” box. The Report Assistant page is oriented to KB Q&A and reports.
+
+What to implement next
+- Parameter resolution tool:
+  - Implement a resolve_parameters tool in ToolEnabledLLM that calls HybridRetriever.retrieve_from_data with embedding_type="column" to return top-k matching columns per NL token (e.g., “engine oil pressure”).
+  - Have the tool return a normalized mapping {canonical_term -> [candidate_columns with scores]} so the LLM can select concrete df columns confidently.
+- Row filtering/data retrieval tool:
+  - Add a filter_data tool that:
+    - Accepts columns, optional conditions (simple ops: ==, !=, >, <, in), and time_window.
+    - Returns a compact preview table (e.g., first N rows) and/or summary stats for the selection. Also stores a generated table for UI.
+  - Add a get_series tool that returns a compact time series sample (x, y columns) for quick tables; this answers “show me values” queries without requiring a plotting pipeline in this step.
+- Boolean state/flag resolution:
+  - For commands like “Find all data points where the landing gear was down”, use resolve_parameters to map user term to likely columns, then filter by a predicate (e.g., value == 1 or string contains “DOWN”).
+- Phase detection:
+  - Provide a simple PhaseDetector utility (heuristics):
+    - If Flight_Phase column exists: use it.
+    - Else infer using vertical speed d(Altitude)/dt, airspeed trends, gear/flap state, and engine torque thresholds:
+      - Takeoff/initial climb: torque high, positive VSI, gear transit/down-to-up change, flaps retracting.
+      - Cruise: small VSI, stable airspeed, torque moderate/steady.
+      - Descent: negative VSI sustained.
+    - Expose a detect_phase_windows(df, requested_phase) function returning [start_s, end_s] windows for use in time_window of tools.
+- UI integration:
+  - Add a new “Natural Language Data Query” section (probably in app.py home page or on 02_Report_Assistant.py as a top tab) that:
+    - Accepts a single query string.
+    - Calls ToolEnabledLLM.ask with tools enabled and df provided.
+    - Renders auto-generated tables and suggested calculations; optionally converts a returned “plot spec” suggestion (see below) into a ChartConfig to render a chart automatically.
+
+Quick wins
+- Your DataIngestor already creates embeddings for columns and summaries; you can leverage that to build the parameter resolution tool without new storage.
+- You already parse DDD:HH:MM:SS.mmm. Teach QueryAnalyzer to detect this in more formulations and pass time_window.
+
+2) Automated Data Analysis & Insight Generation
+What’s in place
+- ToolEnabledLLM exposes:
+  - analyze_anomalies with methods iqr, zscore, modified_zscore.
+  - analyze_trends with slope, R², p-value, direction, time_window support.
+  - analyze_correlations with method choice and strongest pairs table.
+- app.py provides a full statistical analysis section for manual operation (Basic Statistics, Correlation, Outlier, Trend) and rich visual rendering.
+
+Gaps to address
+- End-to-end “scan” mode: the user asks “Scan the last flight for any anomalies in the electrical system” and expects a prioritized list of events with time spans and likely causes.
+- Rate-of-change detection and threshold-based event finding are not exposed as tools.
+- No aggregation of anomalies into “events” with start/end windows and brief narratives.
+
+What to implement next
+- Event scanning tool:
+  - Add scan_anomalies tool that:
+    - Accepts a parameter group hint (e.g., “electrical system”) or a list of columns. If a group hint, use resolve_parameters (column summaries) to select likely columns.
+    - Computes both value outliers and rate-of-change outliers (e.g., rolling z-score on first derivative).
+    - Groups contiguous outliers into events with start/end times and a score.
+    - Returns an event table and stores it for the UI.
+- Trend diagnostics:
+  - Extend analyze_trends backend to optionally compute rolling trends and simple change points (if FlightDataStatistics supports or extend it) so the LLM can narrate “5-minute steady increase” statements grounded in numbers.
+- Correlation with narrative:
+  - Surface correlation drivers by time window: run correlations per phase or per segment to say “During descent, outside air temperature correlates with engine performance at r=…”.
+
+3) Dynamic Report and Plot Narration
+What’s in place
+- 02_Report_Assistant.py builds a comprehensive report prompt and uses ToolEnabledLLM to compute stats, create tables, and narrate.
+- ChartManager offers frequency analysis and time-series plots, with good unit detection and formatting.
+
+Gaps to address
+- No plot-aware narration tool. The LLM currently infers without structured plot metadata.
+- No direct bridge from tables/calculations to ChartManager to produce plots on demand from NL queries.
+
+What to implement next
+- Chart description tool:
+  - Add a describe_plot tool that takes a light JSON describing current plot context:
+    - x_param, y_params, time_window, sample stats, trend info, peaks (from frequency), unit info.
+  - The app can call this after rendering a chart or the LLM can request it if you pipe in a “plot spec” suggestion (below).
+- Plot spec suggestion:
+  - Extend suggest_calculations or add suggest_plots tool to let the model emit a “plot spec”:
+    - {x: "...", y: ["..."], secondary_y: ["..."], time_window: {...}, type: "line|frequency|psd", notes: "..."}
+  - In the “Natural Language Data Query” UI, detect and render this spec by constructing a ChartConfig and calling ChartManager.create_chart.
+
+Cross-cutting architecture observations
+
+- Time windowing: Solid foundation with _parse_flight_time_index and _apply_time_window_filter. Ensure you propagate detected time_column consistently (you default to “Elapsed Time (s)” which is correct).
+- RAG embeddings: You already infer collection dimensions to keep embeddings compatible; good for avoiding dimension mismatch. Maintain the same for uploaded data collections (HybridRetriever already does).
+- QueryAnalyzer: It’s referenced but not attached here. Extend it to:
+  - Extract time windows, parameter phrases, operations (max/min/mean), and action types (plot vs list vs summary).
+  - Extract “phase” intents and call PhaseDetector.
+- Error handling/cost control: Add small caps (row limits) to filter_data outputs and implement a max number of tool rounds (already configurable in ToolEnabledLLM).
+
+Proposed roadmap with acceptance criteria
+
+Milestone 1: NL Data Query MVP (1–2 days)
+- Implement resolve_parameters tool (column retrieval via embeddings).
+- Implement filter_data tool (with conditions and time_window) and get_series tool.
+- Add “Natural Language Data Query” section in the UI:
+  - Queries like “Plot the airspeed and altitude from time 001:10:15:00.000 to 001:10:20:00.000” should:
+    - Resolve params to columns,
+    - Filter the time window,
+    - Return a plot spec and a table preview,
+    - Render a chart automatically.
+- Acceptance tests:
+  - “What was the maximum torque for Engine 1?” returns a small stats table and a single-value summary.
+  - “Find all data points where the landing gear was down” returns a filtered preview with correct row count.
+
+Milestone 2: Automated Scan & Insights (2–3 days)
+- Implement scan_anomalies tool (value and rate-of-change) with event grouping.
+- Extend analyze_trends with optional rolling trend summaries or phase-specific analysis.
+- Add combined narrative that references detected events with timestamps.
+- Acceptance tests:
+  - “Scan the last flight for any anomalies in the electrical system” returns event table + brief narrative with timestamps.
+  - “Tell me if engine vibration correlates with changes in RPM” computes correlations and narrates with r and time scope.
+
+Milestone 3: Plot Narration and Report Polish (1–2 days)
+- Implement suggest_plots and describe_plot tool.
+- Render suggested plots automatically in the NL Data Query UI and include short narration under each plot.
+- Report generator includes phase-aware summaries and detected events tables.
+- Acceptance tests:
+  - “Describe the key features of the current airspeed vs. altitude plot” returns a concise narrative referencing ranges, trends, and notable features.
+  - “Generate a summary of the engine start sequence from the last mission” identifies the segment and narrates with supporting stats.
+
+Open questions to clarify
+- Column naming conventions: Do you consistently include units in column names? If not, add a unit registry to improve parameter resolution and ChartManager labeling.
+- Flight phase availability: Is there a canonical Flight_Phase column in your typical datasets? If not, define minimal heuristics for PhaseDetector (configurable thresholds).
+- Volume constraints: For very large datasets, do you want filter_data to auto-sample for previews? You already have LargeDatasetHandler; reuse it for sampling.
+
+Risk and performance considerations
+- Tool latency: Each resolve_parameters call adds a vector query. Cache resolutions per session (LRU keyed by phrase and file_id).
+- Token/compute cost: Favor tool outputs (tables) over long narratives. You already allow “detail_level”; default to “standard” and keep tables compact.
+- Mismatch risk between embeddings and collections: You handle dimension inference; keep that consistent for uploaded data collections too.
+
+Summary of concrete changes to prioritize
+- Add resolve_parameters, filter_data, get_series (and optionally suggest_plots) tools in ToolEnabledLLM that use HybridRetriever + df operations.
+- Add a small PhaseDetector utility (heuristics + fallback to Flight_Phase column).
+- Add a new Natural Language Data Query UI block that executes the above tools, shows tables, and renders suggested plots via ChartManager.
+- Add scan_anomalies event grouping, plus optional describe_plot to narrate figures.
+
+This path keeps your current design (LLM + tool calls + RAG embeddings + Streamlit UI) and fills the key gaps to deliver all three features end-to-end with minimal new infrastructure.
