@@ -607,8 +607,9 @@ class ToolEnabledLLM:
         prompt: str,
         system_prompt: str,
         df: Optional[pd.DataFrame] = None,
-        temperature: float = 0.2,
-        max_tokens: int = 1200,
+        chat_history: Optional[List[Dict[str, Any]]] = None,
+        temperature: float = 0.6,
+        max_tokens: int = 4000,
         detail_level: str = "standard",
         enable_tools: bool = True,
         extra_context: Optional[str] = None,
@@ -619,24 +620,57 @@ class ToolEnabledLLM:
             "text": str,                     # model answer in markdown
             "sections": Dict[str, str],      # heading-based sections (if any)
             "tables": List[(name, DataFrame)],
-            "suggestions": List[Dict]
+            "suggestions": List[Dict],
+            "history": List[Dict[str, Any]]  # NEW: The updated conversation history
           }
         """
         self.generated_tables.clear()
         self.suggestions.clear()
         self._detected_time_window = None
 
-        messages: List[Dict[str, str]] = []
+        # --- CONVERSATION HISTORY MANAGEMENT ---
+        messages = chat_history.copy() if chat_history else []
+        
+        # If history is empty, create the system prompt
+        if not messages:
+            schema_hint = ""
+            if df is not None and isinstance(df, pd.DataFrame) and not df.empty:
+                sample_cols = df.columns.tolist()[:50]  # cap to be safe
+                schema_hint = (
+                    "Dataset schema (first 50 columns shown):\n"
+                    + ", ".join(sample_cols)
+                    + "\nIf you need to compute stats, detect anomalies, analyze trends, or produce tables, use the available tools."
+                )
 
-        # Provide dataset schema context to help the model be concrete
-        schema_hint = ""
-        if df is not None and isinstance(df, pd.DataFrame) and not df.empty:
-            sample_cols = df.columns.tolist()[:50]  # cap to be safe
-            schema_hint = (
-                "Dataset schema (first 50 columns shown):\n"
-                + ", ".join(sample_cols)
-                + "\nIf you need to compute stats, detect anomalies, analyze trends, or produce tables, use the available tools."
+            detail_instruction = {
+                "brief": "Be concise. Prioritize high-level insights. Use tables only if critical.",
+                "standard": "Be comprehensive but focused. Use compact tables where they clarify results.",
+                "deep": "Provide an-depth analysis with step-by-step reasoning, multiple perspectives, and supporting tables where useful.",
+            }.get(detail_level, "Be comprehensive but focused.")
+
+            system = (
+                f"{system_prompt}\n"
+                f"- {detail_instruction}\n"
+                "- When useful, structure the answer with markdown headings: '### Summary', '### Details', '### Recommendations'.\n"
+                # >>> NEW: Added instruction for LaTeX formulas
+                "- For mathematical formulas, use LaTeX syntax enclosed in `$` or `$$` delimiters (e.g., `$\\Delta V / \\Delta t$`).\n"
+                "- Only cite sources when explicitly provided in the prompt/context.\n"
             )
+
+            if enable_tools:
+                system += "- Use tools for data inspection, statistics, anomaly detection, trend, correlation, and emitting tabular outputs; do not fabricate numeric results.\n"
+            else:
+                system += "- Do not invent specific numeric values; describe the method to compute them if needed.\n"
+
+            if schema_hint:
+                system += "\n" + schema_hint
+            
+            if extra_context:
+                system += "\n" + extra_context
+            
+            messages.append({"role": "system", "content": system})
+        
+        # --- END SYSTEM PROMPT SETUP ---
 
         # NEW: Use a simple QueryAnalyzer to detect time window hints from NL prompt
         if prompt and df is not None and not df.empty:
@@ -649,47 +683,39 @@ class ToolEnabledLLM:
             except Exception:
                 pass
 
-        detail_instruction = {
-            "brief": "Be concise. Prioritize high-level insights. Use tables only if critical.",
-            "standard": "Be comprehensive but focused. Use compact tables where they clarify results.",
-            "deep": "Provide an in-depth analysis with step-by-step reasoning, multiple perspectives, and supporting tables where useful.",
-        }.get(detail_level, "Be comprehensive but focused.")
-
-        system = (
-            f"{system_prompt}\n"
-            f"- {detail_instruction}\n"
-            "- When useful, structure the answer with markdown headings: '### Summary', '### Details', '### Recommendations'.\n"
-            "- Only cite sources when explicitly provided in the prompt/context.\n"
-        )
-
-        if enable_tools:
-            system += "- Use tools for data inspection, statistics, anomaly detection, trend, correlation, and emitting tabular outputs; do not fabricate numeric results.\n"
-        else:
-            system += "- Do not invent specific numeric values; describe the method to compute them if needed.\n"
-
-        if schema_hint:
-            system += "\n" + schema_hint
-
         # Hint the model about any detected time window so it can pass it in tool calls
         if self._detected_time_window:
             det = self._detected_time_window
-            system += (
+            # Add a temporary system message with the hint
+            time_hint = (
                 "\nDetected time window from the user's query: "
                 f"{det.get('start','?')} → {det.get('end','?')} "
                 f"(time_column='{det.get('time_column','Elapsed Time (s)')}'). "
                 "When calling tools, include this as the 'time_window' parameter."
             )
+            # Find and update system prompt, or add a new one if not found
+            system_found = False
+            for msg in messages:
+                if msg['role'] == 'system':
+                    msg['content'] += time_hint
+                    system_found = True
+                    break
+            if not system_found:
+                 messages.insert(0, {"role": "system", "content": time_hint})
 
-        if extra_context:
-            system += "\n" + extra_context
 
-        messages.append({"role": "system", "content": system})
+        # Add the current user prompt to the history
         messages.append({"role": "user", "content": prompt})
 
         tools = self._build_tool_schemas(df) if enable_tools else None
 
         # Tool loop
         for _ in range(self.max_rounds):
+            # Prune history if it's getting too long (simple strategy)
+            # Keep system prompt, and last N exchanges
+            if len(messages) > 15:
+                messages = [messages[0]] + messages[-14:]
+
             resp = self.client.chat.completions.create(
                 model=self.model,
                 messages=messages,
@@ -699,20 +725,15 @@ class ToolEnabledLLM:
                 tool_choice="auto" if enable_tools else None,
             )
             choice = resp.choices[0]
+            response_message = choice.message
 
             # If tool calls exist, handle them
-            tool_calls = getattr(choice.message, "tool_calls", None)
-            if enable_tools and tool_calls:
-                # Append assistant message with tool_calls as-is
-                messages.append(
-                    {
-                        "role": "assistant",
-                        "content": choice.message.content or "",
-                        "tool_calls": [tc.dict() if hasattr(tc, "dict") else dict(tc) for tc in tool_calls],
-                    }
-                )
-                # Execute each tool call
-                for tc in tool_calls:
+            if enable_tools and response_message.tool_calls:
+                # Append assistant message with tool_calls to history
+                messages.append(response_message)
+                
+                # Execute each tool call and append results
+                for tc in response_message.tool_calls:
                     name = tc.function.name
                     try:
                         arguments = json.loads(tc.function.arguments or "{}")
@@ -731,19 +752,27 @@ class ToolEnabledLLM:
                 continue
 
             # No tool calls: finalize
-            text = choice.message.content or ""
+            text = response_message.content or ""
             sections = _sectionize_markdown(text)
+            
+            # Append final assistant response to history
+            messages.append(response_message)
+            
             return {
                 "text": text,
                 "sections": sections,
                 "tables": list(self.generated_tables),
                 "suggestions": list(self.suggestions),
+                "history": messages, # Return the full history
             }
 
         # If loop exits without a normal return
+        final_text = "The assistant reached the maximum tool-calling steps without concluding."
+        messages.append({"role": "assistant", "content": final_text})
         return {
-            "text": "The assistant reached the maximum tool-calling steps without concluding.",
+            "text": final_text,
             "sections": {},
             "tables": list(self.generated_tables),
             "suggestions": list(self.suggestions),
+            "history": messages,
         }
