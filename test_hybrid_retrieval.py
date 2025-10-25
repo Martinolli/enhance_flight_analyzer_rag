@@ -3,7 +3,7 @@ Test script for hybrid retrieval system.
 """
 
 import sys
-sys.path.insert(0, '/home/ubuntu/enhance_flight_analyzer_rag')
+sys.path.insert(0, 'enhance_flight_analyzer_rag')
 
 from components.rag.hybrid_retrieval import HybridRetriever
 
@@ -14,7 +14,7 @@ def main():
     
     # Initialize retriever
     print("\n1. Initializing HybridRetriever...")
-    retriever = HybridRetriever(db_path=".ragdb_test")
+    retriever = HybridRetriever(db_path=".ragdb")
     print("✓ HybridRetriever initialized")
     
     # Check available collections
