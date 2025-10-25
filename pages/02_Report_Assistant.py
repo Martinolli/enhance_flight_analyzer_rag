@@ -1,6 +1,7 @@
 # New flexible, expandable responses with data-aware tools
 
 import os
+import re
 import textwrap
 import tempfile
 
@@ -38,12 +39,44 @@ if "assistant" not in st.session_state:
 st.title("🧭 Knowledge & Report Assistant")
 st.caption("Your conversational partner for flight data analysis, knowledge retrieval, and report generation.")
 
+LATEX_BLOCK_PATTERN = re.compile(r"(?<!\\)\$\$(.+?)(?<!\\)\$\$", re.DOTALL)
+
+def render_markdown_with_latex(content: str, target=None) -> None:
+    """Render markdown content with block-level LaTeX support."""
+    if not content:
+        return
+    if target is None:
+        target = st
+
+    markdown_fn = getattr(target, "markdown", None)
+    if markdown_fn is None:
+        return
+    latex_fn = getattr(target, "latex", None)
+
+    cursor = 0
+    for match in LATEX_BLOCK_PATTERN.finditer(content):
+        before = content[cursor:match.start()]
+        if before.strip():
+            markdown_fn(before)
+
+        expr = match.group(1).strip()
+        if expr:
+            if callable(latex_fn):
+                latex_fn(expr)
+            else:
+                markdown_fn(f"$$\n{expr}\n$$")
+        cursor = match.end()
+
+    tail = content[cursor:]
+    if tail.strip():
+        markdown_fn(tail)
+
 def render_chat_messages():
     """Render the chat history."""
     for msg in st.session_state.assistant_messages:
         with st.chat_message(msg["role"]):
             # Render text content
-            st.markdown(msg["content"])
+            render_markdown_with_latex(msg["content"])
             
             # Render tables if they exist in the message
             if "tables" in msg and msg["tables"]:
@@ -218,7 +251,8 @@ if prompt:
             )
 
             # Update the placeholder with the final response
-            message_placeholder.markdown(result["text"])
+            message_placeholder.empty()
+            render_markdown_with_latex(result["text"], target=message_placeholder)
             
             # --- STORE THE FULL RESPONSE ---
             # The last message in the history is the user's prompt, so we pop it
