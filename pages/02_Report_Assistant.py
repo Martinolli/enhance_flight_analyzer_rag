@@ -64,6 +64,14 @@ def render_chat_messages():
                 for s in msg["suggestions"]:
                     st.markdown(f"- **{s.get('title','Suggestion')}**: {s.get('description','')}")
             
+            # NEW: render figures if present
+            if "figures" in msg and msg["figures"]:
+                st.markdown("#### 📈 Charts")
+                for title, fig in msg["figures"]:
+                    if title:
+                        st.caption(title)
+                    st.pyplot(fig, clear_figure=False)
+            
             # Render citations (sources)
             if "sources" in msg and msg["sources"]:
                 st.markdown("---")
@@ -226,6 +234,7 @@ if prompt:
                 "tables": result["tables"],
                 "suggestions": result["suggestions"],
                 "sources": hits,
+                "figures": result.get("figures", []),  # NEW
             }
             st.session_state.assistant_messages.append(final_assistant_message)
             
@@ -262,6 +271,14 @@ if prompt:
                         source_name = meta.get("source") or meta.get("path") or meta.get("file_name", "Unknown Source")
                         st.caption(f"[{i}] {source_name}")
                         st.write(h.get("text", "")[:1000] + "...")
+
+            # NEW: show figures immediately in this turn
+            if result.get("figures"):
+                st.markdown("#### 📈 Charts")
+                for title, fig in result["figures"]:
+                    if title:
+                        st.caption(title)
+                    st.pyplot(fig, clear_figure=False)
 
 
 st.divider()

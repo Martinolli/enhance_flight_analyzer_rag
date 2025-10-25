@@ -1,9 +1,18 @@
+"""
+LLM assistant with tool calling for data analysis, including anomaly, trend, and correlation analysis.
+    Wraps OpenAI Chat with tools to inspect DataFrame schema, compute stats, generate tables, suggest calculations,
+    and perform advanced analyses using FlightDataStatistics.
+"""
+
 from __future__ import annotations
 
 import json
 import os
 import re
 from typing import Any, Dict, List, Optional, Tuple
+import matplotlib
+matplotlib.use("Agg")  # Use non-GUI backend for environments without display
+import matplotlib.pyplot as plt
 
 import pandas as pd
 
@@ -137,6 +146,8 @@ class ToolEnabledLLM:
         self.suggestions: List[Dict[str, Any]] = []
         # Internal hinting (from QueryAnalyzer)
         self._detected_time_window: Optional[Dict[str, str]] = None
+        # NEW: store generated figures for UI rendering
+        self.generated_figures: List[Tuple[str, Any]] = []
 
     def _build_tool_schemas(self, df: Optional[pd.DataFrame]) -> List[Dict[str, Any]]:
         # Always available tools (do not depend on df)
@@ -382,6 +393,87 @@ class ToolEnabledLLM:
                             },
                         },
                     },
+                    # NEW: Plotting tools
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "plot_time_series",
+                            "description": "Plot one or more columns against a time column as lines.",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "time_column": {
+                                        "type": "string",
+                                        "description": "Time column name, default 'Elapsed Time (s)'"
+                                    },
+                                    "y_columns": {
+                                        "type": "array",
+                                        "items": {"type": "string"},
+                                        "description": "One or more numeric columns to plot"
+                                    },
+                                    "title": {"type": "string"},
+                                    "time_window": {
+                                        "type": "object",
+                                        "properties": {
+                                            "start": {"type": "string"},
+                                            "end": {"type": "string"},
+                                            "time_column": {"type": "string"}
+                                        }
+                                    }
+                                },
+                                "required": ["y_columns"]
+                            }
+                        }
+                    },
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "plot_scatter",
+                            "description": "Scatter plot for two columns, optionally color by a category.",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "x": {"type": "string"},
+                                    "y": {"type": "string"},
+                                    "color_by": {"type": "string", "description": "Optional categorical column"},
+                                    "title": {"type": "string"},
+                                    "time_window": {
+                                        "type": "object",
+                                        "properties": {
+                                            "start": {"type": "string"},
+                                            "end": {"type": "string"},
+                                            "time_column": {"type": "string"}
+                                        }
+                                    }
+                                },
+                                "required": ["x", "y"]
+                            }
+                        }
+                    },
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "plot_histogram",
+                            "description": "Histogram for a numeric column.",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "column": {"type": "string"},
+                                    "bins": {"type": "integer", "default": 30},
+                                    "title": {"type": "string"},
+                                    "time_window": {
+                                        "type": "object",
+                                        "properties": {
+                                            "start": {"type": "string"},
+                                            "end": {"type": "string"},
+                                            "time_column": {"type": "string"}
+                                        }
+                                    }
+                                },
+                                "required": ["column"]
+                            }
+                        }
+                    },
                 ]
             )
         return tools
@@ -596,6 +688,92 @@ class ToolEnabledLLM:
                     self.generated_tables.append(("Top Correlations", df_pairs))
 
                 return _safe_json_dumps({"ok": True, "results": res})
+            
+            # NEW: plotting handlers
+            if name == "plot_time_series":
+                if df is None or df.empty:
+                    return _safe_json_dumps({"error": "No dataset available"})
+                y_cols = [c for c in (arguments.get("y_columns") or []) if c in df.columns]
+                if not y_cols:
+                    return _safe_json_dumps({"error": "No valid y_columns"})
+                time_col = arguments.get("time_column") or ("Elapsed Time (s)" if "Elapsed Time (s)" in df.columns else None)
+                if not time_col or time_col not in df.columns:
+                    return _safe_json_dumps({"error": "Time column not found. Provide 'time_column' or include 'Elapsed Time (s)'."})
+                sub_df = df
+                tw = arguments.get("time_window")
+                if isinstance(tw, dict) or self._detected_time_window:
+                    sub_df = _apply_time_window_filter(df, tw or self._detected_time_window)
+
+                plt.figure(figsize=(8, 4.5))
+                for c in y_cols:
+                    try:
+                        plt.plot(pd.to_numeric(sub_df[time_col], errors="coerce"),
+                                 pd.to_numeric(sub_df[c], errors="coerce"),
+                                 label=c, linewidth=1.2)
+                    except Exception:
+                        continue
+                plt.xlabel(time_col)
+                plt.ylabel(", ".join(y_cols))
+                plt.title(arguments.get("title") or f"Time Series: {', '.join(y_cols)} vs {time_col}")
+                plt.legend(loc="best", fontsize=8)
+                plt.grid(True, alpha=0.3)
+                fig = plt.gcf()
+                self.generated_figures.append((arguments.get("title") or "Time Series", fig))
+                return _safe_json_dumps({"ok": True})
+            
+            if name == "plot_scatter":
+                if df is None or df.empty:
+                    return _safe_json_dumps({"error": "No dataset available"})
+                x = arguments.get("x")
+                y = arguments.get("y")
+                color_by = arguments.get("color_by")
+                if x not in df.columns or y not in df.columns:
+                    return _safe_json_dumps({"error": "x or y not found in dataset"})
+                sub_df = df
+                tw = arguments.get("time_window")
+                if isinstance(tw, dict) or self._detected_time_window:
+                    sub_df = _apply_time_window_filter(df, tw or self._detected_time_window)
+
+                plt.figure(figsize=(6.5, 5))
+                if color_by and color_by in sub_df.columns:
+                    for val, chunk in sub_df.groupby(color_by):
+                        plt.scatter(pd.to_numeric(chunk[x], errors="coerce"),
+                                    pd.to_numeric(chunk[y], errors="coerce"),
+                                    s=12, alpha=0.7, label=str(val))
+                    plt.legend(loc="best", fontsize=8, title=color_by)
+                else:
+                    plt.scatter(pd.to_numeric(sub_df[x], errors="coerce"),
+                                pd.to_numeric(sub_df[y], errors="coerce"),
+                                s=12, alpha=0.7)
+                plt.xlabel(x)
+                plt.ylabel(y)
+                plt.title(arguments.get("title") or f"Scatter: {y} vs {x}")
+                plt.grid(True, alpha=0.3)
+                fig = plt.gcf()
+                self.generated_figures.append((arguments.get("title") or "Scatter", fig))
+                return _safe_json_dumps({"ok": True})
+            
+            if name == "plot_histogram":
+                if df is None or df.empty:
+                    return _safe_json_dumps({"error": "No dataset available"})
+                col = arguments.get("column")
+                if col not in df.columns:
+                    return _safe_json_dumps({"error": "Column not found"})
+                bins = int(arguments.get("bins", 30))
+                sub_df = df
+                tw = arguments.get("time_window")
+                if isinstance(tw, dict) or self._detected_time_window:
+                    sub_df = _apply_time_window_filter(df, tw or self._detected_time_window)
+
+                plt.figure(figsize=(6.5, 4.5))
+                plt.hist(pd.to_numeric(sub_df[col], errors="coerce").dropna(), bins=bins, alpha=0.85, color="#1f77b4")
+                plt.xlabel(col)
+                plt.ylabel("Count")
+                plt.title(arguments.get("title") or f"Histogram: {col}")
+                plt.grid(True, alpha=0.3)
+                fig = plt.gcf()
+                self.generated_figures.append((arguments.get("title") or "Histogram", fig))
+                return _safe_json_dumps({"ok": True})
 
             return _safe_json_dumps({"error": f"Unknown tool: {name}"})
         except Exception as e:
@@ -626,6 +804,7 @@ class ToolEnabledLLM:
         """
         self.generated_tables.clear()
         self.suggestions.clear()
+        self.generated_figures.clear()
         self._detected_time_window = None
 
         # --- CONVERSATION HISTORY MANAGEMENT ---
@@ -763,6 +942,7 @@ class ToolEnabledLLM:
                 "sections": sections,
                 "tables": list(self.generated_tables),
                 "suggestions": list(self.suggestions),
+                "figures": list(self.generated_figures),  # NEW
                 "history": messages, # Return the full history
             }
 
@@ -774,5 +954,6 @@ class ToolEnabledLLM:
             "sections": {},
             "tables": list(self.generated_tables),
             "suggestions": list(self.suggestions),
+            "figures": list(self.generated_figures),  # NEW
             "history": messages,
         }
