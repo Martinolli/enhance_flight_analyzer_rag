@@ -30,6 +30,11 @@ from components.query_understanding import QueryAnalyzer
 
 
 def _safe_json_dumps(obj: Any) -> str:
+    """
+    Safely JSON-encode an object, returning an error message on failure.
+    input: Any serializable object
+    output: JSON string    
+    """
     try:
         return json.dumps(obj, ensure_ascii=False)
     except Exception as e:
@@ -40,6 +45,8 @@ def _sectionize_markdown(md: str) -> Dict[str, str]:
     """
     Very light heading-based splitter. Looks for '### ' headings.
     Returns dict: section_title -> section_content
+    input: markdown string
+    output: dict of sections
     """
     if not md:
         return {}
