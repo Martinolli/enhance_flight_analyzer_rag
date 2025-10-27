@@ -33,44 +33,138 @@ if "assistant" not in st.session_state:
         OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
     
     MODEL_NAME = os.getenv("OPENAI_MODEL", "gpt-4.1")
-    st.session_state.assistant = ToolEnabledLLM(api_key=OPENAI_API_KEY, model=MODEL_NAME)
+    # NEW: allow overriding max tool rounds via env; default to 6
+    ASSISTANT_MAX_ROUNDS = int(os.getenv("ASSISTANT_MAX_ROUNDS", "6"))
+    st.session_state.assistant = ToolEnabledLLM(api_key=OPENAI_API_KEY, model=MODEL_NAME, max_rounds=ASSISTANT_MAX_ROUNDS)
 
 # --- UI & HELPER FUNCTIONS ---
 st.title("🧭 Knowledge & Report Assistant")
 st.caption("Your conversational partner for flight data analysis, knowledge retrieval, and report generation.")
 
 LATEX_BLOCK_PATTERN = re.compile(r"(?<!\\)\$\$(.+?)(?<!\\)\$\$", re.DOTALL)
+# NEW: inline math, fenced-latex, and parenthesized-math detectors
+LATEX_INLINE_PATTERN = re.compile(r"(?<!\\)\$(.+?)(?<!\\)\$")
+FENCED_BLOCK_PATTERN = re.compile(r"```.*?```", re.DOTALL)  # keep generic fences intact
+FENCED_LATEX_PATTERN = re.compile(r"```(?:latex|tex)\s+(.+?)```", re.IGNORECASE | re.DOTALL)
+PAREN_LATEX_LINE = re.compile(r"^\s*\((.+?)\)\s*$")
+
+def _looks_like_latex(s: str) -> bool:
+    """Heuristic: does this line look like LaTeX math content?"""
+    if not s:
+        return False
+    # common LaTeX math commands or syntax
+    return bool(re.search(r"\\(frac|int|sum|sqrt|alpha|beta|gamma|Delta|nabla|cdot|times|pm|le|ge|sin|cos|tan)", s)) \
+        or ("\\" in s) or ("^" in s) or ("_" in s)
+
+def _normalize_loose_math(content: str) -> str:
+    """Convert lines like '( \\int_0^1 f(x) dx )' into '$$ ... $$' blocks."""
+    lines = content.splitlines()
+    out = []
+    for line in lines:
+        m = PAREN_LATEX_LINE.match(line)
+        if m and _looks_like_latex(m.group(1)):
+            expr = m.group(1).strip()
+            out.append("$$\n" + expr + "\n$$")
+        else:
+            out.append(line)
+    return "\n".join(out)
+
+def _render_inline_latex(text: str, markdown_fn, latex_fn) -> None:
+    """Render inline $...$ within a text chunk."""
+    cursor = 0
+    for m in LATEX_INLINE_PATTERN.finditer(text):
+        before = text[cursor:m.start()]
+        if before:
+            markdown_fn(before)
+        expr = m.group(1).strip()
+        if expr and callable(latex_fn):
+            latex_fn(expr)
+        elif expr:
+            markdown_fn(f"${expr}$")
+        cursor = m.end()
+    tail = text[cursor:]
+    if tail:
+        markdown_fn(tail)
+
 
 def render_markdown_with_latex(content: str, target=None) -> None:
-    """Render markdown content with block-level LaTeX support."""
+    """Render markdown with robust LaTeX support: $$...$$ blocks, $...$ inline, ```latex``` fences, and ( ... ) normalization."""
     if not content:
         return
     if target is None:
         target = st
 
     markdown_fn = getattr(target, "markdown", None)
+    latex_fn = getattr(target, "latex", None)
     if markdown_fn is None:
         return
-    latex_fn = getattr(target, "latex", None)
 
+    # 1) Normalize parenthesized math into $$...$$ blocks
+    content = _normalize_loose_math(content)
+
+    # 2) Respect code fences: render them verbatim; parse math only in non-fenced regions
     cursor = 0
-    for match in LATEX_BLOCK_PATTERN.finditer(content):
-        before = content[cursor:match.start()]
-        if before.strip():
-            markdown_fn(before)
+    for fence in FENCED_BLOCK_PATTERN.finditer(content):
+        before = content[cursor:fence.start()]
+        if before:
+            # In non-fenced text, also handle ```latex ...``` specially
+            # First extract any fenced-latex inside 'before'
+            pos = 0
+            for fl in FENCED_LATEX_PATTERN.finditer(before):
+                pre = before[pos:fl.start()]
+                if pre:
+                    # Process block $$...$$, then inline $...$
+                    _render_text_with_blocks_and_inline(pre, markdown_fn, latex_fn)
+                expr = fl.group(1).strip()
+                if expr and callable(latex_fn):
+                    latex_fn(expr)
+                elif expr:
+                    markdown_fn(f"$$\n{expr}\n$$")
+                pos = fl.end()
+            rem = before[pos:]
+            if rem:
+                _render_text_with_blocks_and_inline(rem, markdown_fn, latex_fn)
 
-        expr = match.group(1).strip()
-        if expr:
-            if callable(latex_fn):
-                latex_fn(expr)
-            else:
-                markdown_fn(f"$$\n{expr}\n$$")
-        cursor = match.end()
+        # Now render the fenced block literally
+        fenced_text = content[fence.start():fence.end()]
+        markdown_fn(fenced_text)
+        cursor = fence.end()
 
     tail = content[cursor:]
-    if tail.strip():
-        markdown_fn(tail)
+    if tail:
+        # Handle any fenced-latex within tail first
+        pos = 0
+        for fl in FENCED_LATEX_PATTERN.finditer(tail):
+            pre = tail[pos:fl.start()]
+            if pre:
+                _render_text_with_blocks_and_inline(pre, markdown_fn, latex_fn)
+            expr = fl.group(1).strip()
+            if expr and callable(latex_fn):
+                latex_fn(expr)
+            elif expr:
+                markdown_fn(f"$$\n{expr}\n$$")
+            pos = fl.end()
+        rem = tail[pos:]
+        if rem:
+            _render_text_with_blocks_and_inline(rem, markdown_fn, latex_fn)
 
+def _render_text_with_blocks_and_inline(text: str, markdown_fn, latex_fn) -> None:
+    """Helper: render $$...$$ blocks and then $...$ inline within plain text."""
+    cursor = 0
+    for match in LATEX_BLOCK_PATTERN.finditer(text):
+        before = text[cursor:match.start()]
+        if before:
+            _render_inline_latex(before, markdown_fn, latex_fn)
+        expr = match.group(1).strip()
+        if expr and callable(latex_fn):
+            latex_fn(expr)
+        elif expr:
+            markdown_fn(f"$$\n{expr}\n$$")
+        cursor = match.end()
+    tail = text[cursor:]
+    if tail:
+        _render_inline_latex(tail, markdown_fn, latex_fn)
+        
 def render_chat_messages():
     """Render the chat history."""
     for msg in st.session_state.assistant_messages:
@@ -157,19 +251,42 @@ with st.sidebar:
         else:
             st.error(f"❌ {result['message']}")
 
+    st.subheader("🤖 Model & Response")
+
+    # Allow changing the model at runtime
+    current_model = getattr(st.session_state.get("assistant"), "model", os.getenv("OPENAI_MODEL", "gpt-4.1"))
+    model_input = st.text_input(
+        "OpenAI model",
+        value=current_model,
+        help="Examples: gpt-5, gpt-4.1, gpt-4o, gpt-4o-mini"
+    )
+    if st.button("Apply model"):
+        # Recreate assistant with the chosen model
+        try:
+            # Obtain key again safely
+            try:
+                _key = st.secrets.get("OPENAI_API_KEY", os.getenv("OPENAI_API_KEY"))
+            except Exception:
+                _key = os.getenv("OPENAI_API_KEY")
+            _rounds = int(os.getenv("ASSISTANT_MAX_ROUNDS", str(getattr(st.session_state.get("assistant"), "max_rounds", 6))))
+            st.session_state.assistant = ToolEnabledLLM(api_key=_key, model=model_input, max_rounds=_rounds)
+            st.success(f"Using model: {model_input}")
+        except Exception as e:
+            st.error(f"Failed to initialize model '{model_input}': {e}")
+
+    detail_level = st.radio(
+        "Detail level", ["brief", "standard", "deep"], index=1, horizontal=True,
+        help="Controls how comprehensive the answer is."
+    )
+    temperature = st.slider("Creativity (temperature)", 0.0, 1.0, 0.2, 0.05)
+
+
     st.subheader("🧠 Knowledge Retrieval (RAG)")
     enable_rag = st.checkbox("Enable RAG", value=True, help="Allow assistant to retrieve from knowledge base.")
     if enable_rag:
         db_path = st.text_input("Vector DB path", value=".ragdb")
         top_k = st.slider("Top-K passages", 1, 12, 5)
         include_data_context = st.checkbox("Include data embeddings", value=True, help="Also search in the uploaded data file's embeddings.")
-    
-    st.subheader("🤖 Model & Response")
-    detail_level = st.radio(
-        "Detail level", ["brief", "standard", "deep"], index=1, horizontal=True,
-        help="Controls how comprehensive the answer is."
-    )
-    temperature = st.slider("Creativity (temperature)", 0.0, 1.0, 0.2, 0.05)
 
 
 # --- MAIN CHAT INTERFACE ---
@@ -238,17 +355,23 @@ if prompt:
 
             # Call the assistant
             assistant = st.session_state.assistant
-            result = assistant.ask(
-                prompt=prompt,
-                system_prompt=system_prompt,
-                df=df,
-                chat_history=openai_history[:-1], # Pass history *before* the current user prompt
-                temperature=temperature,
-                max_tokens=4000,
-                detail_level=detail_level,
-                enable_tools=True,
-                extra_context=rag_context,
-            )
+            try:
+                result = assistant.ask(
+                    prompt=prompt,
+                    system_prompt=system_prompt,
+                    df=df,
+                    chat_history=openai_history[:-1], # Pass history *before* the current user prompt
+                    temperature=temperature,
+                    max_tokens=4000,
+                    detail_level=detail_level,
+                    enable_tools=True,
+                    extra_context=rag_context,
+                )
+            except Exception as e:
+                # Surface model/access/SDK errors clearly
+                message_placeholder.empty()
+                st.error(f"OpenAI request failed. Model= '{getattr(assistant, 'model', '?')}'. Error: {e}")
+                st.stop()
 
             # Update the placeholder with the final response
             message_placeholder.empty()
